@@ -37,6 +37,13 @@ test("native output honors CoreMedia framing and keeps concurrent output records
     assert.equal(result.stdout.length, 0);
   });
 
+  await t.test("encoder buffers use NV12 only for native portrait HEVC", async () => {
+    const result = await run(executable, ["encoder-pool", "4"]);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.length, 0);
+  });
+
   await t.test("damage settling finishes quietly and bounds a continuously animated screen", async () => {
     for (const [mode, quiet] of [["settle-quiet", true], ["settle-animated", false]] as const) {
       const result = await run(executable, [mode, "4"]);

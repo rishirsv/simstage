@@ -300,7 +300,10 @@ static BOOL observeOnly = NO;
     codec = nil;
     BOOL hevc = codecType == kCMVideoCodecType_HEVC;
     NSDictionary *specification = @{ (id)(hevc ? kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder : kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder): @YES };
-    NSDictionary *attributes = @{ (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA), (id)kCVPixelBufferWidthKey: @(width), (id)kCVPixelBufferHeightKey: @(height), (id)kCVPixelBufferIOSurfacePropertiesKey: @{}, (id)kCVPixelBufferMetalCompatibilityKey: @YES };
+    // NV12 reduced the complete HEVC path only at native portrait resolution.
+    BOOL nativePortrait = orientation == 1 && width == CVPixelBufferGetWidth(latestBuffer) && height == CVPixelBufferGetHeight(latestBuffer);
+    OSType pixelFormat = hevc && nativePortrait ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA;
+    NSDictionary *attributes = @{ (id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat), (id)kCVPixelBufferWidthKey: @(width), (id)kCVPixelBufferHeightKey: @(height), (id)kCVPixelBufferIOSurfacePropertiesKey: @{}, (id)kCVPixelBufferMetalCompatibilityKey: @YES };
     OSStatus status = VTCompressionSessionCreate(kCFAllocatorDefault, (int32_t)width, (int32_t)height, hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264, (__bridge CFDictionaryRef)specification, (__bridge CFDictionaryRef)attributes, nil, compressedFrame, (__bridge void *)self, &compression);
     if (status) { fail([NSString stringWithFormat:@"Cannot create %@ encoder (%d).", hevc ? @"hardware HEVC" : @"H.264", status]); return NO; }
     // Keyframes are requested explicitly (first frame, new viewers, and periodically while the screen changes).
