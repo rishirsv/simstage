@@ -2,7 +2,8 @@
 
 Use a persistent damage-only simulator observer when there is no active video
 capture. It registers the same screen callbacks as video, without creating a
-Core Image context, retaining image buffers, or submitting frames for encoding.
+Core Image context, copying image buffers, or submitting frames for encoding. The current surface
+wrapper stays retained so CoreSimulator continues delivering damage callbacks.
 Active viewers retain their existing settling path; physical devices and failed
 observer attachments retain screenshot polling.
 
@@ -17,8 +18,8 @@ bridge input and final observation in both variants:
 The quiet window remains 150 ms; the no-viewer deadline remains 2,500 ms. The
 native observer returns a distinct boolean for quiet versus deadline expiry.
 Both outcomes produce one final fresh observation. Attachment is lazy, before
-input; the first action includes helper startup. Warm observations establish
-the ROI above. Session expiry, disconnect, hub shutdown and parent EOF release
+input; the first action includes helper startup. The initial prototype supplied the warm observations above. Production results
+and animation validation follow below. Session expiry, disconnect, hub shutdown and parent EOF release
 the observer. Pending settling requests reject on teardown.
 
 Validation covers native damage deadlines, shared attachment, continuous damage,
