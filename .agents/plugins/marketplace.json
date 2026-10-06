@@ -1,14 +1,14 @@
 {
-  "name": "apple-device-hub",
+  "name": "sim-stage",
   "interface": {
-    "displayName": "Apple Device Hub"
+    "displayName": "Sim Stage"
   },
   "plugins": [
     {
-      "name": "apple-device-hub",
+      "name": "sim-stage",
       "source": {
         "source": "local",
-        "path": "./plugins/apple-device-hub"
+        "path": "./plugins/sim-stage"
       },
       "policy": {
         "installation": "AVAILABLE",

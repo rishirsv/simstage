@@ -110,6 +110,8 @@ static IndigoMessage *touchMessage(IndigoMouseFunction mouse, CGPoint point, CGS
     return message;
 }
 
+typedef struct { uint64_t submitted; uint64_t id; uint64_t capturedAtUnixMs; } CapturedFrame;
+
 @class SimulatorStream;
 static void compressedFrame(void *context, void *sourceContext, OSStatus status, VTEncodeInfoFlags flags, CMSampleBufferRef sample);
 
@@ -149,6 +151,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     CFAbsoluteTime lastEncodedAt;
     CFAbsoluteTime lastKeyFrameAt;
     uint64_t keyFrames;
+    uint64_t lastDamageAt;
     double encodeLatencyTotal;
     double encodeLatencyMax;
     // Live input state; owned by `inputQueue`.
@@ -163,7 +166,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     _Atomic uint32_t surfaceHeight;
 }
 - (BOOL)startWithUDID:(NSString *)udid developerDirectory:(NSString *)developer maxDimension:(NSInteger)maximum maxFPS:(double)fps codecType:(CMVideoCodecType)type;
-- (void)emitSample:(CMSampleBufferRef)sample status:(OSStatus)status;
+- (void)emitSample:(CMSampleBufferRef)sample status:(OSStatus)status capture:(CapturedFrame *)capture;
 - (void)finishedFrameSubmittedAt:(uint64_t)submitted;
 - (void)stop;
 @end
@@ -206,7 +209,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     orientation = 1;
     imageContext = [CIContext contextWithOptions:@{ kCIContextCacheIntermediates: @NO }];
     colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    queue = dispatch_queue_create("apple-device-hub.simulator-video", DISPATCH_QUEUE_SERIAL);
+    queue = dispatch_queue_create("sim-stage.simulator-video", DISPATCH_QUEUE_SERIAL);
     encoderPermit = dispatch_semaphore_create(2);
     registration = [NSUUID UUID];
     startedAt = CFAbsoluteTimeGetCurrent();
@@ -227,12 +230,12 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4), NSEC_PER_SEC / 4, NSEC_PER_MSEC * 10);
     dispatch_source_set_event_handler(timer, ^{ @autoreleasepool { [weakSelf idleRefresh]; } });
     dispatch_resume(timer);
-    diagnostic(@{@"event": @"attached", @"udid": udid, @"screenID": @(selectedID), @"fps": @(maxFPS), @"format": codecType == kCMVideoCodecType_HEVC ? @"hevc-annex-b" : @"h264-annex-b", @"framing": @"uint32be-length"});
+    diagnostic(@{@"event": @"attached", @"udid": udid, @"screenID": @(selectedID), @"fps": @(maxFPS), @"format": codecType == kCMVideoCodecType_HEVC ? @"hevc-annex-b" : @"h264-annex-b", @"framing": @"uint32be-length-id-capture-unix-ms"});
     return YES;
 }
 
 - (void)prepareInputWithDeveloperDirectory:(NSString *)developer {
-    inputQueue = dispatch_queue_create("apple-device-hub.simulator-input", DISPATCH_QUEUE_SERIAL);
+    inputQueue = dispatch_queue_create("sim-stage.simulator-input", DISPATCH_QUEUE_SERIAL);
     NSArray<NSString *> *paths = @[
         [[developer stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"SharedFrameworks/SimulatorKit.framework/SimulatorKit"],
         [developer stringByAppendingPathComponent:@"Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit"],
@@ -254,11 +257,13 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
 }
 
 - (void)receiveProperties:(id)properties {
+    lastDamageAt = mach_absolute_time();
     if ([properties respondsToSelector:sel_registerName("uiOrientation")]) orientation = ((uint32_t(*)(id, SEL))objc_msgSend)(properties, sel_registerName("uiOrientation"));
     if (attached) { damagedSinceKeyFrame = YES; [self encodeLatestFrame]; }
 }
 
 - (void)receiveSurface:(IOSurfaceRef)surface {
+    lastDamageAt = mach_absolute_time();
     if (latestBuffer) { CVPixelBufferRelease(latestBuffer); latestBuffer = nil; }
     if (!surface || stopping) return;
     OSStatus status = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, (__bridge CFDictionaryRef)@{ (id)kCVPixelBufferMetalCompatibilityKey: @YES }, &latestBuffer);
@@ -269,6 +274,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
 }
 
 - (void)receiveFrame {
+    lastDamageAt = mach_absolute_time();
     damagedSinceKeyFrame = YES;
     [self encodeLatestFrame];
 }
@@ -327,6 +333,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     // Two frames may be in flight; a frame that arrives meanwhile is encoded when a permit returns.
     if (dispatch_semaphore_wait(encoderPermit, DISPATCH_TIME_NOW)) { pendingFrame = YES; return; }
     pendingFrame = NO;
+    uint64_t capturedAtUnixMs = (uint64_t)((CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970) * 1000);
     CIImage *image = [CIImage imageWithCVPixelBuffer:latestBuffer];
     CGImagePropertyOrientation rotation = kCGImagePropertyOrientationUp;
     if (orientation == 2) rotation = kCGImagePropertyOrientationDown;
@@ -353,9 +360,13 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     lastEncodedAt = now;
     NSDictionary *frameProperties = keyFrame ? @{ (id)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES } : nil;
     submittedFrames++;
-    status = VTCompressionSessionEncodeFrame(compression, ownedBuffer, CMClockGetTime(CMClockGetHostTimeClock()), kCMTimeInvalid, (__bridge CFDictionaryRef)frameProperties, (void *)(uintptr_t)mach_absolute_time(), nil);
+    CapturedFrame *capture = calloc(1, sizeof(CapturedFrame));
+    capture->submitted = mach_absolute_time();
+    capture->id = submittedFrames;
+    capture->capturedAtUnixMs = capturedAtUnixMs;
+    status = VTCompressionSessionEncodeFrame(compression, ownedBuffer, CMClockGetTime(CMClockGetHostTimeClock()), kCMTimeInvalid, (__bridge CFDictionaryRef)frameProperties, capture, nil);
     CVPixelBufferRelease(ownedBuffer);
-    if (status) { [self releaseEncoderPermit]; fail([NSString stringWithFormat:@"Cannot encode video frame (%d).", status]); }
+    if (status) { free(capture); [self releaseEncoderPermit]; fail([NSString stringWithFormat:@"Cannot encode video frame (%d).", status]); }
 }
 
 - (void)releaseEncoderPermit {
@@ -371,7 +382,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     }
 }
 
-- (void)emitSample:(CMSampleBufferRef)sample status:(OSStatus)status {
+- (void)emitSample:(CMSampleBufferRef)sample status:(OSStatus)status capture:(CapturedFrame *)capture {
     // VideoToolbox may deliver callbacks off the capture queue. Keep each length
     // header and payload together when nonblocking stdout requires several writes.
     @synchronized (self) {
@@ -421,8 +432,9 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
                 offset += nalLength;
             }
             if (!stopping && packet.length) {
-                uint32_t recordLength = CFSwapInt32HostToBig((uint32_t)packet.length);
-                if (writeBytes(&recordLength, sizeof(recordLength)) && writeBytes(packet.bytes, packet.length)) emittedFrames++;
+                uint32_t recordLength = CFSwapInt32HostToBig((uint32_t)packet.length + 16);
+                uint64_t identity[] = { CFSwapInt64HostToBig(capture->id), CFSwapInt64HostToBig(capture->capturedAtUnixMs) };
+                if (writeBytes(&recordLength, sizeof(recordLength)) && writeBytes(identity, sizeof(identity)) && writeBytes(packet.bytes, packet.length)) emittedFrames++;
             }
             [self releaseEncoderPermit];
         }
@@ -470,11 +482,33 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     [self sendHID:hidMessage(IndigoDigitizerTarget, 0x0c, 0x40, 2)];
 }
 
+- (void)checkSettling:(uint64_t)request quietMs:(double)quietMs deadline:(uint64_t)deadline started:(uint64_t)started {
+    uint64_t now = mach_absolute_time();
+    BOOL quiet = milliseconds(now - MAX(lastDamageAt, started)) >= quietMs;
+    if (quiet || now >= deadline) {
+        diagnostic(@{@"event": @"settled", @"requestId": @(request), @"quiet": @(quiet)});
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC), queue, ^{
+        if (!stopping) [self checkSettling:request quietMs:quietMs deadline:deadline started:started];
+    });
+}
+
 - (void)command:(const char *)line {
     char phase = 0;
     double x = NAN, y = NAN;
+    uint64_t request;
+    double quietMs, budgetMs;
     if (!strcmp(line, "k")) {
         dispatch_async(queue, ^{ self->forceKeyFrame = YES; [self encodeLatestFrame]; });
+    } else if (sscanf(line, "s %llu %lf %lf", &request, &quietMs, &budgetMs) == 3 && quietMs > 0 && budgetMs >= quietMs && budgetMs <= 10000) {
+        dispatch_async(queue, ^{
+            uint64_t started = mach_absolute_time();
+            static mach_timebase_info_data_t base;
+            if (!base.denom) mach_timebase_info(&base);
+            uint64_t deadline = started + (uint64_t)(budgetMs * 1e6 * base.denom / base.numer);
+            [self checkSettling:request quietMs:quietMs deadline:deadline started:started];
+        });
     } else if (!strcmp(line, "home")) {
         [self pressHome];
     } else if (sscanf(line, "t %c %lf %lf", &phase, &x, &y) == 3 && phase && strchr("dmuc", phase) && isfinite(x) && isfinite(y)) {
@@ -484,7 +518,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     }
 }
 
-/** Standard input carries newline-separated commands: `k`, `home`, and `t <d|m|u|c> <x> <y>`. */
+/** Standard input carries `k`, `s <id> <quiet-ms> <budget-ms>`, `home`, and `t <d|m|u|c> <x> <y>`. */
 - (void)readCommands {
     __weak SimulatorStream *weakSelf = self;
     [NSThread detachNewThreadWithBlock:^{
@@ -523,8 +557,10 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
 
 static void compressedFrame(void *context, void *sourceContext, OSStatus status, VTEncodeInfoFlags flags, CMSampleBufferRef sample) {
     SimulatorStream *stream = (__bridge SimulatorStream *)context;
-    [stream finishedFrameSubmittedAt:(uint64_t)(uintptr_t)sourceContext];
-    [stream emitSample:sample status:status];
+    CapturedFrame *capture = sourceContext;
+    [stream finishedFrameSubmittedAt:capture->submitted];
+    [stream emitSample:sample status:status capture:capture];
+    free(capture);
 }
 
 int main(int argc, char **argv) {

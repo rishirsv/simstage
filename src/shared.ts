@@ -2,13 +2,13 @@ import { z } from "zod";
 import type { ScreenElement } from "./elements.js";
 
 /** Tool results carry the raw accessibility tree here for the viewer, outside model context. */
-export const HIERARCHY_META_KEY = "apple-device-hub/hierarchy";
+export const HIERARCHY_META_KEY = "sim-stage/hierarchy";
 /**
  * Results the model also reads carry the viewer's structured state here.
  * Codex gives models only structuredContent when a result has it, dropping
  * the element list and screenshot, so those results return text and images.
  */
-export const DATA_META_KEY = "apple-device-hub/data";
+export const DATA_META_KEY = "sim-stage/data";
 
 export const deviceSchema = z.object({
   id: z.string(),
@@ -18,7 +18,7 @@ export const deviceSchema = z.object({
   runtime: z.string(),
   state: z.string(),
   available: z.boolean(),
-  /** A simulator Device Hub created, which simulator_delete may remove. */
+  /** A simulator Sim Stage created, which simulator_delete may remove. */
   createdByHub: z.boolean().optional(),
 });
 export type Device = z.infer<typeof deviceSchema>;
@@ -30,22 +30,22 @@ export const sessionSchema = z.object({
 });
 export type Session = z.infer<typeof sessionSchema>;
 
-/** A device session another Device Hub server holds, such as another chat or window. */
+/** A device session another Sim Stage server holds, such as another chat or window. */
 export interface SharedDevice {
   deviceId: string;
   deviceName: string;
-  /** Device Hub servers sharing it. */
+  /** Sim Stage servers sharing it. */
   holders: number;
   /** The session was started by another tool and joined with takeOver. */
   otherTool?: boolean;
 }
 
-/** The device most recently connected by any Device Hub server; viewers follow it. */
+/** The device most recently connected by any Sim Stage server; viewers follow it. */
 export interface DeviceFocus { deviceId: string; deviceName: string; at: string }
 
 /** How device_connect obtained its session. */
-export type SessionOrigin = "new" | "this-server" | "device-hub" | "other-tool";
-export type ConnectedSession = Session & { origin: SessionOrigin };
+export type SessionOrigin = "new" | "this-server" | "sim-stage" | "other-tool";
+export type ConnectedSession = Session & { origin: SessionOrigin; observation: Capture };
 
 export interface HubState {
   devices: Device[];
@@ -144,3 +144,6 @@ export const settingsSchema = z.object({
   increasedContrast: z.boolean().optional(),
 });
 export type DeviceSettings = z.infer<typeof settingsSchema>;
+
+/** Provisional freshness ceiling until comparable browser journey measurements tune it. */
+export const VIDEO_MAX_FRAME_AGE_MS = 500;

@@ -33,7 +33,8 @@ const ScreenSurface = memo(function ScreenSurface({ state, elements, highlight, 
   const frame = useRef<HTMLDivElement>(null);
   const gesture = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    void initializeViewer({ root: document.getElementById("root")!, screen: screen.current!, canvas: canvas.current!, frame: frame.current!, gesture: gesture.current! });
+    const attachment = initializeViewer({ root: document.getElementById("root")!, screen: screen.current!, canvas: canvas.current!, frame: frame.current!, gesture: gesture.current! });
+    return attachment.dispose;
   }, []);
   const bounds = state.capture?.coordinateSpace;
   const shape = state.videoDimensions ?? bounds;

@@ -1,3 +1,4 @@
+import { VIDEO_MAX_FRAME_AGE_MS } from "./shared.js";
 import { inspectVideoAccessUnit, type VideoCodec } from "./video-codec.js";
 
 export interface SimulatorStream {
@@ -9,9 +10,13 @@ export interface SimulatorStream {
   format?: VideoCodec;
 }
 
+/** Server age plus conservative RPC elapsed; the browser adds only its local monotonic elapsed. */
+export interface SimulatorVideoFrame { id: number; capturedAtUnixMs: number; ageMs: number; data: Uint8Array }
+export interface VideoMilestone { phase: "received" | "decode-start" | "decode" | "draw" | "present"; id: number; capturedAtUnixMs: number; ageMs: number; at: number }
+
 export interface SimulatorVideoTransport {
   /** One item is one Annex B access unit; reads wait for a bounded video batch. */
-  read(): Promise<Uint8Array[]>;
+  read(recover?: boolean): Promise<SimulatorVideoFrame[]>;
   stop(): void;
 }
 
@@ -36,7 +41,12 @@ export class SimulatorVideoPlayer {
   private stopped = false;
   private waitingForKey = true;
   private codec: string;
-  private timestamp = 0;
+  private ageTimer: ReturnType<typeof setTimeout> | undefined;
+  private paint: number | undefined;
+  private present: number | undefined;
+  private latestFrame: { frame: VideoFrame; metadata?: SimulatorVideoFrame; receivedAt: number } | undefined;
+  private metadata = new Map<number, { frame: SimulatorVideoFrame; receivedAt: number }>();
+  private recover = false;
   private readonly context: CanvasRenderingContext2D;
 
   constructor(
@@ -45,6 +55,7 @@ export class SimulatorVideoPlayer {
     private readonly onFrame: (dimensions: { width: number; height: number }) => void,
     private readonly onError: (error: Error) => void,
     private readonly transport?: SimulatorVideoTransport,
+    private readonly milestone?: (event: VideoMilestone) => void,
   ) {
     this.codec = stream.codec;
     if (typeof VideoDecoder === "undefined" || typeof EncodedVideoChunk === "undefined") throw new Error("This viewer does not support live simulator video. Open it in a browser with WebCodecs support.");
@@ -58,20 +69,13 @@ export class SimulatorVideoPlayer {
     try {
       this.decoder = new VideoDecoder({
         output: frame => {
-          try {
-            if (this.stopped) return;
-            if (this.canvas.width !== frame.displayWidth || this.canvas.height !== frame.displayHeight) {
-              this.canvas.width = frame.displayWidth;
-              this.canvas.height = frame.displayHeight;
-            }
-            this.context.drawImage(frame, 0, 0);
-            this.onFrame({ width: frame.displayWidth, height: frame.displayHeight });
-            if (!this.stopped) this.armWatchdog(5000);
-          } catch (error) {
-            this.fail(error);
-          } finally {
-            frame.close();
-          }
+          const metadata = this.metadata.get(frame.timestamp);
+          this.metadata.delete(frame.timestamp);
+          if (this.stopped || !metadata) { frame.close(); return; }
+          this.record("decode", metadata.frame, metadata.receivedAt);
+          this.latestFrame?.frame.close();
+          this.latestFrame = { frame, metadata: metadata.frame, receivedAt: metadata.receivedAt };
+          if (this.paint === undefined) this.paint = requestAnimationFrame(() => this.drawLatest());
         },
         error: error => this.fail(new Error(`Live video decoder failed: ${error.message}`)),
       });
@@ -94,7 +98,13 @@ export class SimulatorVideoPlayer {
           return;
         }
         if (!(event.data instanceof ArrayBuffer)) return;
-        try { this.decode(new Uint8Array(event.data)); } catch (error) { this.fail(error); }
+        try {
+          const bytes = new Uint8Array(event.data);
+          if (bytes.length <= 16) throw new Error("Invalid video frame envelope.");
+          const header = new DataView(bytes.buffer, bytes.byteOffset, 16);
+          const capturedAtUnixMs = Number(header.getBigUint64(8));
+          this.decode({ id: Number(header.getBigUint64(0)), capturedAtUnixMs, ageMs: Math.max(0, Date.now() - capturedAtUnixMs), data: bytes.subarray(16) }, performance.now());
+        } catch (error) { this.fail(error); }
       };
       socket.onerror = () => this.fail(new Error("Could not connect to the local simulator video stream."));
       socket.onclose = () => { if (!this.stopped) this.fail(new Error("The simulator video stream disconnected.")); };
@@ -107,6 +117,12 @@ export class SimulatorVideoPlayer {
     if (this.watchdog !== undefined) clearTimeout(this.watchdog);
     this.watchdog = undefined;
     this.resumeDecode?.();
+    if (this.paint !== undefined) cancelAnimationFrame(this.paint);
+    if (this.present !== undefined) cancelAnimationFrame(this.present);
+    this.paint = this.present = undefined;
+    this.latestFrame?.frame.close();
+    this.latestFrame = undefined;
+    this.metadata.clear();
     this.transport?.stop();
     const socket = this.socket;
     this.socket = undefined;
@@ -127,54 +143,111 @@ export class SimulatorVideoPlayer {
   private async readFrames() {
     try {
       while (!this.stopped) {
-        const frames = await this.transport!.read();
+        const recovery = this.recover;
+        this.recover = false;
+        const frames = await this.transport!.read(recovery);
         if (this.stopped) return;
+        const receivedAt = performance.now();
         for (const frame of frames) {
           if (this.stopped) return;
-          if (this.decoder!.decodeQueueSize >= 4) await this.waitForDecoder();
+          if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(); break; }
+          if (this.decoder!.decodeQueueSize >= 4) await this.waitForDecoder(frame, receivedAt);
           if (this.stopped) return;
-          this.decode(frame);
+          if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(); break; }
+          this.decode(frame, receivedAt);
         }
       }
     } catch (error) { this.fail(error); }
   }
 
-  private waitForDecoder() {
+  private age(frame: SimulatorVideoFrame, receivedAt: number) { return frame.ageMs + performance.now() - receivedAt; }
+
+  private resetChain(requestKeyframe = true) {
+    if (this.decoder!.state === "configured") this.decoder!.reset();
+    this.metadata.clear();
+    this.latestFrame?.frame.close();
+    this.latestFrame = undefined;
+    this.waitingForKey = true;
+    this.recover = requestKeyframe;
+    if (requestKeyframe && this.socket?.readyState === WebSocket.OPEN) this.socket.send("keyframe");
+  }
+
+  private waitForDecoder(frame: SimulatorVideoFrame, receivedAt: number) {
     const decoder = this.decoder!;
     return new Promise<void>(resolve => {
       const ready = () => { if (decoder.decodeQueueSize < 4) finish(); };
       const finish = () => {
         decoder.removeEventListener("dequeue", ready);
+        clearTimeout(this.ageTimer);
+        this.ageTimer = undefined;
         this.resumeDecode = undefined;
         resolve();
       };
       this.resumeDecode = finish;
+      this.ageTimer = setTimeout(finish, Math.max(0, VIDEO_MAX_FRAME_AGE_MS - this.age(frame, receivedAt)));
       decoder.addEventListener("dequeue", ready);
       ready();
     });
   }
 
-  private decode(data: Uint8Array) {
+  private record(phase: VideoMilestone["phase"], frame: SimulatorVideoFrame, receivedAt: number) {
+    this.milestone?.({ phase, id: frame.id, capturedAtUnixMs: frame.capturedAtUnixMs, ageMs: this.age(frame, receivedAt), at: performance.now() });
+  }
+
+  private drawLatest() {
+    this.paint = undefined;
+    const latest = this.latestFrame;
+    this.latestFrame = undefined;
+    if (!latest) return;
+    const { frame, metadata, receivedAt } = latest;
+    try {
+      if (this.stopped) return;
+      if (metadata && this.age(metadata, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(); this.resumeDecode?.(); return; }
+      if (this.canvas.width !== frame.displayWidth || this.canvas.height !== frame.displayHeight) {
+        this.canvas.width = frame.displayWidth;
+        this.canvas.height = frame.displayHeight;
+      }
+      this.context.drawImage(frame, 0, 0);
+      if (metadata) this.record("draw", metadata, receivedAt);
+      this.onFrame({ width: frame.displayWidth, height: frame.displayHeight });
+      if (!this.stopped) {
+        this.armWatchdog(5000);
+        if (metadata) {
+          // A following animation frame confirms a rendering opportunity after the canvas draw.
+          if (this.present !== undefined) cancelAnimationFrame(this.present);
+          this.present = requestAnimationFrame(() => { this.present = undefined; if (!this.stopped) this.record("present", metadata, receivedAt); });
+        }
+      }
+    } catch (error) { this.fail(error); }
+    finally { frame.close(); }
+  }
+
+  private decode(frame: SimulatorVideoFrame, receivedAt: number) {
+    const data = frame.data;
+    this.record("received", frame, receivedAt);
+    if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(); return; }
     const decoder = this.decoder!;
     const unit = inspectVideoAccessUnit(data, this.stream.format ?? "h264");
     if (!unit.hasPicture) return;
     if (unit.codec && unit.codec !== this.codec) {
       this.codec = unit.codec;
-      if (decoder.state === "configured") decoder.reset();
-      this.waitingForKey = true;
+      this.resetChain(!unit.keyFrame || !unit.hasParameterSets);
     }
     // A slow renderer catches up at the next IDR instead of accumulating latency.
     if (decoder.decodeQueueSize > 4) {
-      decoder.reset();
-      this.waitingForKey = true;
+      this.resetChain();
     }
     if (this.waitingForKey && (!unit.keyFrame || !unit.hasParameterSets)) return;
     // The descriptor codec is provisional; configure from the actual SPS only
     // once a complete keyframe can start decoding.
     if (decoder.state === "unconfigured") this.configure();
     this.waitingForKey = false;
-    decoder.decode(new EncodedVideoChunk({ type: unit.keyFrame ? "key" : "delta", timestamp: this.timestamp, data }));
-    this.timestamp += Math.round(1_000_000 / this.stream.fps);
+    if (unit.keyFrame && unit.hasParameterSets) this.recover = false;
+    // Native IDs are monotonic per encoder. Gaps retain identity when recovery skips frames.
+    const timestamp = frame.id * Math.round(1_000_000 / this.stream.fps);
+    this.metadata.set(timestamp, { frame, receivedAt });
+    this.record("decode-start", frame, receivedAt);
+    decoder.decode(new EncodedVideoChunk({ type: unit.keyFrame ? "key" : "delta", timestamp, data }));
   }
 
   private armWatchdog(delay: number) {

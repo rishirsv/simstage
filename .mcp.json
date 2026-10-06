@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "apple-device-hub": {
-      "command": "node",
-      "args": ["./plugins/apple-device-hub/dist/server.js"],
+    "sim-stage": {
+      "command": "bun",
+      "args": ["./packages/sim-stage-mcp/dist/server.js"],
       "cwd": "."
     }
   }

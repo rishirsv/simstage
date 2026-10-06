@@ -31,12 +31,22 @@ test("native output honors CoreMedia framing and keeps concurrent output records
   ]);
   assert.equal(compilation.code, 0, compilation.stderr);
 
+  await t.test("damage settling finishes quietly and bounds a continuously animated screen", async () => {
+    for (const [mode, quiet] of [["settle-quiet", true], ["settle-animated", false]] as const) {
+      const result = await run(executable, [mode, "4"]);
+      assert.equal(result.code, 0, result.stderr);
+      const event = result.stderr.split("\n").filter(Boolean).map(line => JSON.parse(line)).find(event => event.event === "settled");
+      assert.deepEqual(event, { event: "settled", requestId: 17, quiet });
+      assert.equal(result.stdout.length, 0, "settling depends on damage callbacks without an encoded idle frame");
+    }
+  });
+
   for (const width of [1, 2, 4]) {
     await t.test(`delta frames use the format's ${width}-byte NAL lengths`, async () => {
       const result = await run(executable, ["delta", String(width)]);
       assert.equal(result.code, 0, result.stderr);
       const units: Buffer[] = [];
-      new AccessUnitReader().push(result.stdout, unit => units.push(Buffer.from(unit)));
+      new AccessUnitReader().push(result.stdout, unit => { assert.equal(unit.id, 42); assert.equal(unit.capturedAtUnixMs, 123456789); units.push(Buffer.from(unit.data)); });
       assert.deepEqual(units, [Buffer.from([0, 0, 0, 1, 0x41, 0x55, 0x55, 0x55, 0x55])]);
     });
   }
@@ -45,7 +55,7 @@ test("native output honors CoreMedia framing and keeps concurrent output records
     const result = await run(executable, ["key", "4"]);
     assert.equal(result.code, 0, result.stderr);
     const units: Buffer[] = [];
-    new AccessUnitReader().push(result.stdout, unit => units.push(Buffer.from(unit)));
+    new AccessUnitReader().push(result.stdout, unit => { assert.equal(unit.id, 42); assert.equal(unit.capturedAtUnixMs, 123456789); units.push(Buffer.from(unit.data)); });
     assert.equal(units.length, 1);
     assert.equal(units[0]![4]! & 0x1f, 7, "SPS precedes the frame");
     assert.match(result.stderr, /"event":"configuration"/);
@@ -55,14 +65,14 @@ test("native output honors CoreMedia framing and keeps concurrent output records
     const key = await run(executable, ["hevc-key", String(width)]);
     assert.equal(key.code, 0, key.stderr);
     const units: Buffer[] = [];
-    new AccessUnitReader().push(key.stdout, unit => units.push(Buffer.from(unit)));
+    new AccessUnitReader().push(key.stdout, unit => units.push(Buffer.from(unit.data)));
     assert.equal(units.length, 1);
     assert.deepEqual(inspectVideoAccessUnit(units[0]!, "hevc"), { keyFrame: true, hasPicture: true, hasParameterSets: true, codec: "hev1.1.6.L150.B0" });
     assert.match(key.stderr, /hevc-annex-b/);
     const delta = await run(executable, ["hevc-delta", String(width)]);
     assert.equal(delta.code, 0, delta.stderr);
     const deltas: Buffer[] = [];
-    new AccessUnitReader().push(delta.stdout, unit => deltas.push(Buffer.from(unit)));
+    new AccessUnitReader().push(delta.stdout, unit => deltas.push(Buffer.from(unit.data)));
     assert.deepEqual(deltas, [Buffer.from([0, 0, 0, 1, 2, 1, 0x55, 0x55, 0x55])]);
   });
 
@@ -77,7 +87,7 @@ test("native output honors CoreMedia framing and keeps concurrent output records
     const result = await run(executable, ["concurrent", "4"]);
     assert.equal(result.code, 0, result.stderr);
     const units: Buffer[] = [];
-    new AccessUnitReader().push(result.stdout, unit => units.push(Buffer.from(unit)));
+    new AccessUnitReader().push(result.stdout, unit => { assert.equal(unit.id, 42); assert.equal(unit.capturedAtUnixMs, 123456789); units.push(Buffer.from(unit.data)); });
     assert.equal(units.length, 24);
     const counts = new Map<number, number>();
     for (const unit of units) {

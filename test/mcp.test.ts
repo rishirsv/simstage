@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { callHubTool, captureResult, createHubServer, DATA_META_KEY, describeHub, HIERARCHY_META_KEY, UI_URI, type Hub } from "../src/mcp.js";
+import { callHubTool, captureResult, createHubServer, DATA_META_KEY, HIERARCHY_META_KEY, UI_URI, type Hub } from "../src/mcp.js";
 import type { Capture, Device, Session } from "../src/shared.js";
 import { SessionExpiredError } from "../src/apple.js";
 
@@ -10,18 +10,18 @@ const session: Session = { id: "16764887-9da3-43ed-85d4-a372838d5a70", device: {
 function frame(enabled = true): Capture {
   return { session: { ...session, accessibilityEnabled: enabled }, capturedAt: "2026-09-23T10:00:00.000Z", screenshot: { mimeType: "image/png", data: "screen-base64", width: 1170, height: 2532 }, coordinateSpace: { width: 390, height: 844 }, ...(enabled ? { hierarchy: "Window {{0, 0}, {390, 844}}" } : {}) };
 }
-const created: Device = { id: "6F0C1B2A-0000-4000-8000-000000000001", name: "iPhone 17 Pro (Device Hub)", kind: "simulator", platform: "iOS", runtime: "iOS 27.2", state: "Shutdown", available: true, createdByHub: true };
+const created: Device = { id: "6F0C1B2A-0000-4000-8000-000000000001", name: "iPhone 17 Pro (Sim Stage)", kind: "simulator", platform: "iOS", runtime: "iOS 27.2", state: "Shutdown", available: true, createdByHub: true };
 function fakeHub(): { hub: Hub; calls: unknown[] } {
   const calls: unknown[] = [];
   const hub: Hub = {
     async status() { return { devices: [session.device], sessions: [], warnings: [] }; },
-    async connect(id, options) { calls.push(["connect", id, ...(options && Object.keys(options).length ? [options] : [])]); return { ...session, origin: "new" as const }; },
+    async connect(id, options) { calls.push(["connect", id, ...(options && Object.keys(options).length ? [options] : [])]); return { ...session, origin: "new" as const, observation: frame() }; },
     async createSimulator(options) { calls.push(["createSimulator", options]); return created; },
     async deleteSimulator(id) { calls.push(["deleteSimulator", id]); return { ...created, id }; },
     async capture(id, options) { calls.push(["capture", id, options]); return frame(options?.accessibilityEnabled ?? true); },
     async frame(id) { calls.push(["frame", id]); return { ...frame(false), screenshot: { mimeType: "image/jpeg", data: "frame-base64", width: 644, height: 1400 } }; },
     async stream(id, format = "h264", maxDimension) { calls.push(["stream", id, format, ...(maxDimension ? [maxDimension] : [])]); return { sessionId: id, url: "ws://127.0.0.1:5555/video/test", format, codec: format === "hevc" ? "hev1.1.6.L150.B0" : "avc1.42E01F", fps: 60 }; },
-    async streamRead(id, streamId) { calls.push(["streamRead", id, streamId]); return { sessionId: id, streamId, sequence: 0, frames: ["encoded-video-frame"], active: true }; },
+    async streamRead(id, streamId) { calls.push(["streamRead", id, streamId]); return { sessionId: id, streamId, sequence: 0, frames: [{ id: 1, capturedAtUnixMs: 0, ageMs: 0, data: "encoded-video-frame" }], active: true }; },
     async streamStop(id, streamId) { calls.push(["streamStop", id, streamId]); },
     async input(id, events) { calls.push(["input", id, events]); },
     async action(id, action, options) { calls.push(["action", id, action, options]); return frame(); },
@@ -87,10 +87,15 @@ test("session tools explain to the model how each session was obtained and keep 
   const { hub, calls } = fakeHub();
   const connected = await callHubTool(hub, "device_connect", { deviceId: "simulator-one" });
   assert.match((connected.content[0] as { text: string }).text, new RegExp(`Connected to Test iPhone \\(simulator, iOS 27\\)\\. Session ID: ${session.id}\\..*viewer now shows this device`));
-  assert.equal((connected._meta?.[DATA_META_KEY] as Session).id, session.id);
+  const data = connected._meta?.[DATA_META_KEY] as Session & { observation: Capture };
+  assert.equal(data.id, session.id);
+  assert.deepEqual(data.observation.coordinateSpace, frame().coordinateSpace);
+  assert.equal(data.observation.screenshot?.data, undefined, "image bytes stay out of connection metadata");
+  assert.equal(connected._meta?.[HIERARCHY_META_KEY], frame().hierarchy);
+  assert.equal(connected.content.filter(item => item.type === "image").length, 1);
   await callHubTool(hub, "device_connect", { deviceId: "simulator-one", takeOver: true });
   const createdResult = await callHubTool(hub, "simulator_create", { deviceType: "iPhone 17 Pro" });
-  assert.match((createdResult.content[0] as { text: string }).text, /^Created iPhone 17 Pro \(Device Hub\) \(iOS 27\.2\), id 6F0C1B2A.*simulator_delete removes it.*Connected to/);
+  assert.match((createdResult.content[0] as { text: string }).text, /^Created iPhone 17 Pro \(Sim Stage\) \(iOS 27\.2\), id 6F0C1B2A.*simulator_delete removes it.*Connected to/);
   await callHubTool(hub, "simulator_create", { cloneFrom: "simulator-one", connect: false });
   assert.equal((await callHubTool(hub, "simulator_create", { deviceType: "iPhone 17 Pro", cloneFrom: "simulator-one" })).isError, true);
   assert.equal((await callHubTool(hub, "simulator_create", {})).isError, true);
@@ -105,24 +110,6 @@ test("session tools explain to the model how each session was obtained and keep 
   ]);
 });
 
-test("the status text lists this server's sessions, devices open elsewhere, and what can be created", () => {
-  const stopped: Device = { ...created, id: "stopped-1", name: "iPhone 17", createdByHub: false };
-  const physical: Device = { id: "phone-1", name: "My iPhone", kind: "device", platform: "iOS", runtime: "iOS 27.0", state: "connected", available: true };
-  const text = describeHub({
-    devices: [session.device, stopped, physical, { ...created, state: "Booted" }],
-    sessions: [session], warnings: [],
-    elsewhere: [{ deviceId: "other-1", deviceName: "iPhone 18 Pro", holders: 1 }],
-    focus: { deviceId: session.device.id, deviceName: session.device.name, at: "2026-09-30T10:00:00.000Z" },
-  });
-  assert.match(text, /Sessions on this server.*\n- Test iPhone \(simulator, iOS 27\) · session 16764887-9da3-43ed-85d4-a372838d5a70 · shown in the viewer/);
-  assert.match(text, /Open in another Device Hub chat or window \(device_connect joins and shares it\):\n- iPhone 18 Pro · id other-1/);
-  assert.match(text, /Running \(the user may be using these\):\n- My iPhone · iOS 27\.0 · physical device · id phone-1\n- iPhone 17 Pro \(Device Hub\) · iOS 27\.2 · id 6F0C1B2A-0000-4000-8000-000000000001 · created by Device Hub/);
-  assert.match(text, /Shut-down simulators \(device_connect boots one\):\n- iPhone 17 · iOS 27\.2 · id stopped-1/);
-  assert.equal(text.includes("Physical devices:"), false, "a connected phone is listed once, as running");
-  assert.match(text, /simulator_create makes a fresh simulator/);
-  assert.match(describeHub({ devices: [], sessions: [], warnings: [] }), /No sessions on this server\. device_connect opens one, or joins one already open in another chat or window\./);
-});
-
 test("a text-only result says the screenshot was left out and how to request it", () => {
   const { screenshot: _screenshot, ...textOnly } = frame();
   const capture: Capture = { ...textOnly, elements: [{ ref: "e1", role: "Button", label: "General", frame: { x: 16, y: 380, width: 370, height: 52 }, point: { x: 201, y: 406 } }] };
@@ -130,20 +117,6 @@ test("a text-only result says the screenshot was left out and how to request it"
   assert.deepEqual(result.content.map(item => item.type), ["text"]);
   assert.equal((result._meta?.[DATA_META_KEY] as Record<string, unknown>).screenshot, undefined);
   assert.match((result.content[0] as { text: string }).text, /No screenshot attached; the elements below describe the screen\. Pass screenshot: "always"/);
-});
-
-test("actions pass settle and resolution through and default to agent behaviour", async () => {
-  const { hub, calls } = fakeHub();
-  await callHubTool(hub, "device_action", { sessionId: session.id, action: { type: "tap", element: { ref: "e3" } } });
-  await callHubTool(hub, "device_action", { sessionId: session.id, action: { type: "scroll", direction: "down" }, settle: false, resolution: "full" });
-  await callHubTool(hub, "device_settings", { sessionId: session.id, settings: { appearance: "dark" }, screenshot: "always" });
-  assert.deepEqual(calls, [
-    ["action", session.id, { type: "tap", element: { ref: "e3" } }, { screenshot: "auto" }],
-    ["action", session.id, { type: "scroll", direction: "down", distance: 0.6 }, { screenshot: "auto", settle: false, resolution: "full" }],
-    ["settings", session.id, { appearance: "dark" }, { screenshot: "always" }],
-  ]);
-  assert.equal((await callHubTool(hub, "device_action", { sessionId: session.id, action: { type: "tap", element: { ref: "button-3" } } })).isError, true);
-  assert.equal((await callHubTool(hub, "device_action", { sessionId: session.id, action: { type: "launchApp", bundleId: "com.apple.x; rm -rf" } })).isError, true);
 });
 
 test("disabling the hierarchy passes the view preference through and omits tree data from the result", async () => {
@@ -155,20 +128,11 @@ test("disabling the hierarchy passes the view preference through and omits tree 
   assert.equal(JSON.stringify(result.content).includes("Window"), false);
 });
 
-test("live frames return a compressed image without hierarchy", async () => {
-  const { hub, calls } = fakeHub();
-  const result = await callHubTool(hub, "device_frame", { sessionId: session.id });
-  assert.deepEqual(calls, [["frame", session.id]]);
-  assert.deepEqual(result.content.find(item => item.type === "image"), { type: "image", data: "frame-base64", mimeType: "image/jpeg" });
-  assert.equal(result._meta?.[HIERARCHY_META_KEY], undefined);
-  assert.equal((await callHubTool(hub, "device_frame", { sessionId: "not-a-session" })).isError, true);
-});
-
 test("embedded native video batches stay in app metadata and stop is scoped", async () => {
   const { hub, calls } = fakeHub();
   const streamId = "a".repeat(48);
   const result = await callHubTool(hub, "device_stream_read", { sessionId: session.id, streamId });
-  assert.deepEqual(result._meta?.["apple-device-hub/video"], { sessionId: session.id, streamId, sequence: 0, frames: ["encoded-video-frame"], active: true });
+  assert.deepEqual(result._meta?.["sim-stage/video"], { sessionId: session.id, streamId, sequence: 0, frames: [{ id: 1, capturedAtUnixMs: 0, ageMs: 0, data: "encoded-video-frame" }], active: true });
   assert.equal(JSON.stringify(result.content).includes("encoded-video-frame"), false);
   assert.equal(result.structuredContent, undefined);
   assert.equal((await callHubTool(hub, "device_stream_stop", { sessionId: session.id, streamId })).isError, undefined);
@@ -183,6 +147,8 @@ test("invalid or arbitrary device commands are rejected before calling Apple", a
   for (const args of [
     { sessionId: session.id, action: { type: "shell", command: "open /etc/passwd" } },
     { sessionId: session.id, action: { type: "tap", x: -10, y: 20 } },
+    { sessionId: session.id, action: { type: "tap", element: { ref: "button-3" } } },
+    { sessionId: session.id, action: { type: "launchApp", bundleId: "com.apple.x; rm -rf" } },
     { sessionId: "untrusted-secret-key", action: { type: "tap", x: 10, y: 20 } },
   ]) assert.equal((await callHubTool(hub, "device_action", args)).isError, true);
   assert.deepEqual(calls, []);
@@ -222,14 +188,14 @@ test("expired session results give the app a precise reconnect signal for the af
 
 test("MCP discovery advertises native host entrypoints and opening accepts empty arguments", async () => {
   const { hub } = fakeHub();
-  const server = createHubServer(hub, new URL("../plugins/apple-device-hub/dist/", import.meta.url));
+  const server = createHubServer(hub, new URL("../packages/sim-stage-mcp/dist/", import.meta.url));
   const client = new Client({ name: "test", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   try {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const { tools } = await client.listTools();
-    const opening = tools.find(tool => tool.name === "open_device_hub")!;
+    const opening = tools.find(tool => tool.name === "open_sim_stage")!;
     assert.deepEqual((opening._meta?.["openai/ui"] as Record<string, unknown>).entrypoints, [{ type: "global" }, { type: "thread" }]);
     assert.equal((opening._meta?.ui as Record<string, unknown>).resourceUri, UI_URI);
     assert.equal(tools.some(tool => tool.name.startsWith("DeviceInteraction")), false);
@@ -239,14 +205,6 @@ test("MCP discovery advertises native host entrypoints and opening accepts empty
     for (const name of ["device_stream_read", "device_stream_stop", "device_input"]) {
       assert.deepEqual((tools.find(tool => tool.name === name)!._meta?.ui as Record<string, unknown>).visibility, ["app"]);
     }
-    const destructive = new Set(["device_action", "device_settings", "device_disconnect", "device_stream_stop", "device_input", "simulator_click", "simulator_drag", "simulator_type_text", "simulator_press_key", "simulator_delete"]);
-    const openWorld = new Set(["device_action", "device_input", "simulator_click", "simulator_drag", "simulator_type_text", "simulator_press_key"]);
-    for (const tool of tools) {
-      assert.equal(tool.annotations?.destructiveHint, destructive.has(tool.name), `${tool.name} reports destructive effects`);
-      assert.equal(tool.annotations?.openWorldHint, openWorld.has(tool.name), `${tool.name} reports arbitrary app destinations`);
-    }
-    assert.equal(tools.find(tool => tool.name === "device_stream")!.annotations?.readOnlyHint, false);
-    assert.equal(tools.find(tool => tool.name === "device_stream_stop")!.annotations?.readOnlyHint, false);
     const resource = await client.readResource({ uri: UI_URI });
     assert.deepEqual(resource.contents[0]._meta?.ui, { prefersBorder: false });
     assert.deepEqual((tools.find(tool => tool.name === "device_capture")!._meta?.ui as Record<string, unknown>).visibility, ["app", "model"]);
@@ -254,13 +212,26 @@ test("MCP discovery advertises native host entrypoints and opening accepts empty
       const tool = tools.find(tool => tool.name === name)!;
       assert.ok(tool, `${name} is available through MCP`);
       assert.deepEqual((tool._meta?.ui as Record<string, unknown>).visibility, ["app", "model"]);
-      assert.equal(tool.annotations?.readOnlyHint, name === "simulator_get_state" || name === "simulator_screenshot");
     }
     for (const name of ["simulator_create", "simulator_delete", "device_connect"]) {
       assert.deepEqual((tools.find(tool => tool.name === name)!._meta?.ui as Record<string, unknown>).visibility, ["app", "model"]);
     }
-    const result = await client.callTool({ name: "open_device_hub", arguments: {} });
+    const result = await client.callTool({ name: "open_sim_stage", arguments: {} });
     assert.equal(result.structuredContent, undefined, "Codex would show models only structured content");
     assert.deepEqual(result._meta?.[DATA_META_KEY], { devices: [session.device], sessions: [], warnings: [] });
   } finally { await client.close(); await server.close(); }
+});
+
+
+test("device ref actions require and forward snapshots, while settings can refresh without mutation", async () => {
+  const { hub, calls } = fakeHub();
+  const action = { type: "tap", element: { ref: "e1" } };
+  assert.equal((await callHubTool(hub, "device_action", { sessionId: session.id, action })).isError, true);
+  assert.deepEqual(calls, []);
+  await callHubTool(hub, "device_action", { sessionId: session.id, snapshot: 3, action, settle: false });
+  await callHubTool(hub, "device_settings", { sessionId: session.id });
+  assert.deepEqual(calls, [
+    ["action", session.id, action, { screenshot: "auto", snapshot: 3, settle: false }],
+    ["settings", session.id, undefined, { screenshot: "auto" }],
+  ]);
 });

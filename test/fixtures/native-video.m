@@ -4,11 +4,14 @@
 #undef main
 
 @interface SimulatorStreamFixture : SimulatorStream
+- (dispatch_queue_t)fixtureQueue;
 @end
 @implementation SimulatorStreamFixture
+- (dispatch_queue_t)fixtureQueue { return queue; }
 - (instancetype)init {
     if ((self = [super init])) {
         encoderPermit = dispatch_semaphore_create(0);
+        queue = dispatch_queue_create("settling-fixture", DISPATCH_QUEUE_SERIAL);
         encodedWidth = sourceWidth = 1320;
         encodedHeight = sourceHeight = 2868;
         encodedOrientation = 1;
@@ -61,19 +64,31 @@ int main(int argc, char **argv) {
         SimulatorStreamFixture *stream = [SimulatorStreamFixture new];
         NSString *mode = @(argv[1]);
         int headerLength = atoi(argv[2]);
-        if ([mode isEqualToString:@"concurrent"]) {
+        if ([mode hasPrefix:@"settle-"]) {
+            dispatch_sync([stream fixtureQueue], ^{
+                uint64_t started = mach_absolute_time();
+                mach_timebase_info_data_t base;
+                mach_timebase_info(&base);
+                uint64_t deadline = started + (uint64_t)(300 * 1e6 * base.denom / base.numer);
+                [stream checkSettling:17 quietMs:150 deadline:deadline started:started];
+                if ([mode isEqualToString:@"settle-animated"]) for (int index = 1; index <= 7; index++) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, index * 50 * NSEC_PER_MSEC), [stream fixtureQueue], ^{ [stream receiveFrame]; });
+                }
+            });
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.45]];
+        } else if ([mode isEqualToString:@"concurrent"]) {
             dispatch_group_t group = dispatch_group_create();
             for (uint8_t marker = 0x55; marker <= 0x56; marker++) {
                 dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                     CMSampleBufferRef sample = makeSample(headerLength, marker, 128 * 1024, YES, NO, NO);
-                    for (int index = 0; index < 12; index++) [stream emitSample:sample status:noErr];
+                    for (int index = 0; index < 12; index++) [stream emitSample:sample status:noErr capture:&(CapturedFrame){ .id = 42, .capturedAtUnixMs = 123456789 }];
                     CFRelease(sample);
                 });
             }
             dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
         } else {
             CMSampleBufferRef sample = makeSample(headerLength, 0x55, 5, ![mode hasSuffix:@"key"], [mode hasSuffix:@"truncated"], [mode hasPrefix:@"hevc"]);
-            [stream emitSample:sample status:noErr];
+            [stream emitSample:sample status:noErr capture:&(CapturedFrame){ .id = 42, .capturedAtUnixMs = 123456789 }];
             CFRelease(sample);
         }
         return exitCode;

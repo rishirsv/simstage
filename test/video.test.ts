@@ -8,7 +8,7 @@ import test, { type TestContext } from "node:test";
 import { WebSocket, type RawData } from "ws";
 import { AppleHub, type AppleBoundary } from "../src/apple.js";
 import { SessionRegistry } from "../src/session-registry.js";
-import { AccessUnitReader, LiveInputPacer, SimulatorVideo } from "../src/video.js";
+import { AccessUnitReader, LiveInputPacer, SimulatorVideo, type NativeVideoFrame } from "../src/video.js";
 import { declareH264DecodeOrder, inspectVideoAccessUnit } from "../src/video-codec.js";
 
 const accessUnit = Buffer.from([
@@ -18,8 +18,10 @@ const accessUnit = Buffer.from([
 ]);
 
 function packet(unit: Buffer): Buffer {
-  const header = Buffer.alloc(4);
-  header.writeUInt32BE(unit.length);
+  const header = Buffer.alloc(20);
+  header.writeUInt32BE(unit.length + 16);
+  header.writeBigUInt64BE(1n, 4);
+  header.writeBigUInt64BE(BigInt(Date.now()), 12);
   return Buffer.concat([header, unit]);
 }
 
@@ -41,10 +43,19 @@ function fixture(t: TestContext, script?: string) {
     keepAlive: id => touched.push(id),
     launch(deviceId) {
       devices.push(deviceId);
-      const child = spawn(process.execPath, ["-e", script ?? `
+      const child = spawn(process.execPath, ["-e", `
+        const originalWrite = process.stdout.write.bind(process.stdout);
+        process.stdout.write = (chunk, ...args) => {
+          if (Buffer.isBuffer(chunk) && chunk.length >= 20 && chunk.readUInt32BE(0) + 4 === chunk.length) {
+            chunk = Buffer.from(chunk);
+            chunk.writeBigUInt64BE(BigInt(Date.now()), 12);
+          }
+          return originalWrite(chunk, ...args);
+        };
+      ` + (script ?? `
         const frame = Buffer.from(${JSON.stringify([...packet(accessUnit)])});
         setInterval(() => process.stdout.write(frame), 30);
-      `], { stdio: ["pipe", "pipe", "pipe"] });
+      `)], { stdio: ["pipe", "pipe", "pipe"] });
       children.push(child);
       return child;
     },
@@ -84,7 +95,7 @@ test("native video preserves complete access units across arbitrary pipe chunks"
   const bytes = Buffer.concat([packet(accessUnit), packet(second), packet(accessUnit)]);
   // Split both length headers and payloads; also deliver two whole units together.
   for (const [from, to] of [[0, 1], [1, 3], [3, 6], [6, 11], [11, bytes.length]]) {
-    reader.push(bytes.subarray(from, to), unit => units.push(Buffer.from(unit)));
+    reader.push(bytes.subarray(from, to), unit => units.push(Buffer.from(unit.data)));
   }
   assert.deepEqual(units, [accessUnit, second, accessUnit]);
 });
@@ -121,7 +132,7 @@ test("missing capabilities and invalid Host headers cannot launch native capture
   const view = await viewer(t, stream.url);
   const [data, binary] = await view.firstFrame;
   assert.equal(binary, true);
-  assert.deepEqual(data, accessUnit);
+  assert.deepEqual((data as Buffer).subarray(16), accessUnit);
   assert.deepEqual(f.devices, ["simulator-one"]);
 });
 
@@ -172,13 +183,13 @@ test("HEVC and H.264 viewers keep independent encoders and codec-specific keyfra
   const hevcStream = await video.stream("same-session", "device", "hevc");
   assert.equal(hevcStream.format, "hevc");
   const h265Viewer = await viewer(t, hevcStream.url);
-  assert.deepEqual((await h265Viewer.firstFrame)[0], hevc);
+  assert.deepEqual(((await h265Viewer.firstFrame)[0] as Buffer).subarray(16), hevc);
   const h264Viewer = await viewer(t, (await video.stream("same-session", "device", "h264")).url);
   await h264Viewer.firstFrame;
   const relay = await video.stream("same-session", "device", "hevc");
   const batch = await video.read("same-session", relay.streamId!);
   assert.ok(batch.frames.length);
-  assert.equal(inspectVideoAccessUnit(Buffer.from(batch.frames[0]!, "base64"), "hevc").hasParameterSets, true);
+  assert.equal(inspectVideoAccessUnit(Buffer.from(batch.frames[0]!.data, "base64"), "hevc").hasParameterSets, true);
   assert.equal(children.size, 2, "HEVC relay shares only the HEVC encoder");
   video.stop("same-session", relay.streamId!);
   const exit = deadline(once(children.get("hevc")!, "exit"));
@@ -197,9 +208,9 @@ test("H.264 keyframes reach viewers and relays with decode order declared in the
   const declared = Buffer.from(declareH264DecodeOrder(native));
   assert.notDeepEqual(declared, native);
   const view = await viewer(t, (await f.video.stream("session-one", "simulator-one")).url);
-  assert.deepEqual((await view.firstFrame)[0], declared);
+  assert.deepEqual(((await view.firstFrame)[0] as Buffer).subarray(16), declared);
   const relay = await f.video.stream("session-two", "simulator-two");
-  assert.deepEqual((await f.video.read("session-two", relay.streamId!)).frames, [declared.toString("base64")]);
+  assert.deepEqual((await f.video.read("session-two", relay.streamId!)).frames.map(frame => frame.data), [declared.toString("base64")]);
 });
 
 test("viewers joining an existing encoder receive codec parameters and a keyframe before deltas", async t => {
@@ -211,11 +222,11 @@ test("viewers joining an existing encoder receive codec parameters and a keyfram
     setInterval(() => process.stdout.write(frame++ % 8 === 0 ? key : delta), 30);
   `);
   const first = await viewer(t, (await f.video.stream("session-one", "simulator-one")).url);
-  assert.deepEqual((await first.firstFrame)[0], accessUnit);
+  assert.deepEqual(((await first.firstFrame)[0] as Buffer).subarray(16), accessUnit);
   const second = await viewer(t, (await f.video.stream("session-one", "simulator-one")).url);
-  assert.deepEqual((await second.firstFrame)[0], accessUnit, "a mid-GOP viewer starts at the next independently decodable frame");
+  assert.deepEqual(((await second.firstFrame)[0] as Buffer).subarray(16), accessUnit, "a mid-GOP viewer starts at the next independently decodable frame");
   assert.equal(f.children.length, 1);
-  assert.deepEqual((await deadline(once(second.socket, "message")))[0], delta);
+  assert.deepEqual(((await deadline(once(second.socket, "message")))[0] as Buffer).subarray(16), delta);
 });
 
 test("a slow final viewer releases capture before its close handshake completes", async t => {
@@ -266,7 +277,7 @@ test("hub shutdown closes viewers, kills every helper, and disables the endpoint
   await f.video.close();
   await Promise.all([...exits, ...closes]);
   await assert.rejects(f.video.stream("session-one", "simulator-one"), /closed/);
-  await assert.rejects(fetch(unused.url.replace(/^ws:/, "http:")), /fetch failed/);
+  await assert.rejects(fetch(unused.url.replace(/^ws:/, "http:")), { code: "ConnectionRefused" });
 });
 
 test("video sockets reject incoming control messages and release their helper", async t => {
@@ -278,7 +289,7 @@ test("video sockets reject incoming control messages and release their helper", 
   view.socket.send(JSON.stringify({ tap: [10, 20] }));
   const [code, reason] = await closed;
   assert.equal(code, 1008);
-  assert.match(reason.toString(), /receive-only/);
+  assert.match(reason.toString(), /only keyframe recovery/);
   await exited;
 });
 
@@ -336,14 +347,16 @@ test("MCP video reads relay native H.264 in bounded batches and consume the capa
   assert.equal(f.children.length, 0);
   const pending = f.video.read("session-one", stream.streamId);
   await assert.rejects(f.video.read("session-one", stream.streamId), /already in progress/);
-  const batch = await pending;
+  let batch = await pending;
+  let sequence = 0;
+  while (!batch.frames.length && sequence < 20) { sequence++; batch = await f.video.read("session-one", stream.streamId); }
   const next = await f.video.read("session-one", stream.streamId);
   assert.equal(batch.active, true);
   assert.equal(batch.sessionId, "session-one");
   assert.equal(batch.streamId, stream.streamId);
-  assert.deepEqual([batch.sequence, next.sequence], [0, 1], "batches are numbered in the order they were served");
+  assert.deepEqual([batch.sequence, next.sequence], [sequence, sequence + 1], "batches are numbered in the order they were served");
   assert.ok(batch.frames.length > 0 && batch.frames.length <= 30);
-  assert.ok([...batch.frames, ...next.frames].every(frame => Buffer.from(frame, "base64").equals(accessUnit)));
+  assert.ok([...batch.frames, ...next.frames].every(frame => Buffer.from(frame.data, "base64").equals(accessUnit)));
   assert.equal(f.children.length, 1);
   assert.equal(await rejected(stream.url), 403);
   await assert.rejects(f.video.read("session-two", stream.streamId), /another session/);
@@ -404,13 +417,17 @@ test("an MCP relay with no frames returns an empty batch and stops an in-flight 
 });
 
 test("idle MCP relays expire, release native capture, and cannot reuse their consumed ticket", async t => {
+  // Capture only the idle deadline; sockets and child processes keep real timers.
+  const schedule = globalThis.setTimeout;
+  let expired: (() => void) | undefined;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void, delay: number, ...args: unknown[]) => {
+    if (delay === 10_000) expired = callback;
+    return schedule(callback, delay, ...args);
+  });
   const f = fixture(t);
   const stream = await f.video.stream("session-one", "simulator-one");
   await f.video.read("session-one", stream.streamId!);
-  const relay = (Reflect.get(f.video, "relays") as Map<string, { idle: ReturnType<typeof setTimeout> }>).get(stream.streamId!)!;
-  assert.ok(relay);
-  // Advance just this existing timeout, preserving real socket and child-process events.
-  const expired = Reflect.get(relay.idle, "_onTimeout") as () => void;
+  assert.ok(expired, "reading the relay schedules its idle deadline");
   const exited = deadline(once(f.children[0]!, "exit"));
   expired();
   await exited;
@@ -419,11 +436,11 @@ test("idle MCP relays expire, release native capture, and cannot reuse their con
   assert.equal(await rejected(stream.url), 403);
 });
 
-type TestRelay = { frames: Buffer[]; bytes: number; waitingForKey: boolean };
+type TestRelay = { frames: NativeVideoFrame[]; bytes: number; waitingForKey: boolean };
 function relayOf(video: SimulatorVideo, streamId: string) {
   const relay = (Reflect.get(video, "relays") as Map<string, TestRelay>).get(streamId)!;
-  const deliver = Reflect.get(video, "deliver") as (relay: TestRelay, unit: Buffer, key: boolean) => void;
-  return { relay, deliver: (unit: Buffer) => { const info = inspectVideoAccessUnit(unit); deliver.call(video, relay, unit, info.keyFrame && info.hasParameterSets); } };
+  const deliver = Reflect.get(video, "deliver") as (relay: TestRelay, unit: NativeVideoFrame, key: boolean) => void;
+  return { relay, deliver: (unit: Buffer) => { const info = inspectVideoAccessUnit(unit); deliver.call(video, relay, { id: 1, capturedAtUnixMs: Date.now(), data: unit }, info.keyFrame && info.hasParameterSets); } };
 }
 const singleFrame = `process.stdout.write(Buffer.from(${JSON.stringify([...packet(accessUnit)])})); setInterval(() => {}, 1000);`;
 
@@ -440,7 +457,7 @@ test("MCP relay overflow discards dependent frames until a complete keyframe", a
   assert.equal(relay.bytes, 0);
   deliver(accessUnit);
   deliver(delta);
-  assert.deepEqual(relay.frames, [accessUnit, delta]);
+  assert.deepEqual(relay.frames.map(frame => frame.data), [accessUnit, delta]);
   assert.equal(relay.waitingForKey, false);
   assert.ok(relay.bytes <= 2 * 1024 * 1024);
   for (let index = 0; index < 30; index++) deliver(Buffer.from([0, 0, 0, 1, 0x41, 0x55]));
@@ -471,7 +488,7 @@ test("a pending MCP read returns as soon as the next frame arrives", async t => 
   const delta = Buffer.from([0, 0, 0, 1, 0x41, 0x55]);
   setTimeout(() => deliver(delta), 20);
   const batch = await reading;
-  assert.deepEqual(batch.frames, [delta.toString("base64")]);
+  assert.deepEqual(batch.frames.map(frame => frame.data), [delta.toString("base64")]);
   assert.ok(performance.now() - started < 200, "frames are not held for the idle wait");
 });
 
@@ -487,11 +504,11 @@ test("a relay joining a running encoder requests a keyframe instead of waiting f
     setInterval(() => { process.stdout.write(requested ? key : delta); requested = false; }, 20);
   `);
   const first = await viewer(t, (await f.video.stream("session-one", "simulator-one")).url);
-  assert.deepEqual((await first.firstFrame)[0], accessUnit);
+  assert.deepEqual(((await first.firstFrame)[0] as Buffer).subarray(16), accessUnit);
   await deadline(once(first.socket, "message"));
   const relay = await f.video.stream("session-one", "simulator-one");
   const batch = await f.video.read("session-one", relay.streamId!);
-  assert.deepEqual(batch.frames.map(frame => Buffer.from(frame, "base64")), [accessUnit]);
+  assert.deepEqual(batch.frames.map(frame => Buffer.from(frame.data, "base64")), [accessUnit]);
   assert.equal(f.children.length, 1);
 });
 
@@ -616,4 +633,74 @@ test("Apple interaction disconnect closes live video before ending the native se
   await Promise.all([closed, exited]);
   assert.equal(await rejected(unused.url), 403);
   await assert.rejects(hub.stream(session.id), /expired or disconnected/);
+});
+
+test("relay recovery discards the entire expired chain and requests a fresh complete keyframe", async t => {
+  const f = fixture(t, singleFrame);
+  const stream = await f.video.stream("session-one", "simulator-one");
+  await f.video.read("session-one", stream.streamId!);
+  const { relay, deliver } = relayOf(f.video, stream.streamId!);
+  const delta = Buffer.from([0, 0, 0, 1, 0x41, 0x55]);
+  deliver(delta);
+  relay.frames[0]!.capturedAtUnixMs = Date.now() - 1000;
+  const requests: string[] = [];
+  const stdin = f.children[0]!.stdin;
+  const write = stdin.write.bind(stdin);
+  stdin.write = ((line: string) => { requests.push(line); return write(line); }) as typeof stdin.write;
+  const reading = f.video.read("session-one", stream.streamId!);
+  assert.equal(relay.frames.length, 0);
+  assert.equal(relay.waitingForKey, true);
+  assert.ok(requests.includes("k\n"));
+  deliver(delta);
+  assert.equal(relay.frames.length, 0, "a dependent delta cannot resume a discarded chain");
+  deliver(accessUnit);
+  const recovered = await reading;
+  assert.deepEqual(recovered.frames.map(frame => Buffer.from(frame.data, "base64")), [accessUnit]);
+  assert.ok(recovered.frames[0]!.ageMs < 100);
+  deliver(delta);
+  const explicitRecovery = f.video.read("session-one", stream.streamId!, true);
+  assert.equal(relay.frames.length, 0, "viewer expiry requests also replace a server-buffered chain");
+  deliver(delta);
+  deliver(accessUnit);
+  assert.deepEqual((await explicitRecovery).frames.map(frame => Buffer.from(frame.data, "base64")), [accessUnit]);
+});
+
+test("native settling capability disposes every waiter on completion and channel teardown", async t => {
+  const f = fixture(t, singleFrame);
+  assert.equal(f.video.waitForIdle("session-one"), undefined, "no active native bridge preserves the Apple boundary path");
+  const stream = await f.video.stream("session-one", "simulator-one");
+  await f.video.read("session-one", stream.streamId!);
+  type SettlingChannel = { settles: Map<number, unknown> };
+  const channel = [...(Reflect.get(f.video, "channels") as Map<string, SettlingChannel>).values()][0]!;
+  const diagnostic = Reflect.get(f.video, "diagnostic") as (channel: SettlingChannel, line: string) => void;
+  const quiet = f.video.waitForIdle("session-one", 1000)!;
+  const id = [...channel.settles.keys()][0]!;
+  diagnostic.call(f.video, channel, JSON.stringify({ event: "settled", requestId: id, quiet: true }));
+  assert.equal(await quiet, true);
+  assert.equal(channel.settles.size, 0);
+  const bounded = f.video.waitForIdle("session-one", 1000)!;
+  diagnostic.call(f.video, channel, JSON.stringify({ event: "settled", requestId: [...channel.settles.keys()][0], quiet: false }));
+  assert.equal(await bounded, false, "continuous damage can exhaust the bounded settling budget");
+  const pending = f.video.waitForIdle("session-one", 1000)!;
+  const rejection = assert.rejects(pending, /stopped while settling/);
+  f.video.closeSession("session-one");
+  await rejection;
+  assert.equal(channel.settles.size, 0);
+});
+
+test("a direct viewer recovers from an idle delta chain by requesting one keyframe", async t => {
+  const f = fixture(t, `
+    const key = Buffer.from(${JSON.stringify([...packet(accessUnit)])});
+    process.stdout.write(key);
+    process.stdin.on("data", data => { if (String(data).includes("k\\n")) process.stdout.write(key); });
+    setInterval(() => {}, 1000);
+  `);
+  const view = await viewer(t, (await f.video.stream("session-one", "simulator-one")).url);
+  await view.firstFrame;
+  const frame = deadline(once(view.socket, "message"));
+  view.socket.send("keyframe");
+  const [data, binary] = await frame;
+  assert.equal(binary, true);
+  assert.deepEqual((data as Buffer).subarray(16), accessUnit);
+  assert.equal(f.children.length, 1, "fresh recovery retains the active encoder");
 });

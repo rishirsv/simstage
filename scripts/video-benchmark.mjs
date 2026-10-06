@@ -1,4 +1,4 @@
-// Run with node --import tsx scripts/video-benchmark.mjs <booted-simulator-UDID>.
+// Run with bun scripts/video-benchmark.mjs <booted-simulator-UDID>.
 // Samples the real helper, including VideoToolbox hardware diagnostics.
 import { spawn } from "node:child_process";
 import { writeFile, mkdir } from "node:fs/promises";
@@ -8,14 +8,15 @@ import { inspectVideoAccessUnit } from "../src/video-codec.ts";
 
 const deviceId = process.argv[2];
 if (!deviceId) throw new Error("Pass a booted simulator UDID.");
-const directory = new URL("../artifacts/validation/2026-09-30/", import.meta.url);
+const directory = new URL(`../artifacts/validation/${new Date().toISOString().slice(0, 10)}/native-components/`, import.meta.url);
 await mkdir(directory, { recursive: true });
 const samples = [];
 for (const format of ["hevc", "h264"]) {
   const sample = await new Promise((resolve, reject) => {
-    const child = spawn(fileURLToPath(new URL("../plugins/apple-device-hub/dist/simulator-stream", import.meta.url)), [deviceId, "--codec", format]);
+    const child = spawn(fileURLToPath(new URL("../packages/sim-stage-mcp/dist/simulator-stream", import.meta.url)), [deviceId, "--codec", format]);
     const start = performance.now();
     const units = [];
+    const captures = [];
     const reader = new AccessUnitReader();
     let firstFrameMs, lastFrameMs, codec, stderr = "", failure;
     child.stderr.on("data", data => { stderr += data; });
@@ -24,8 +25,9 @@ for (const format of ["hevc", "h264"]) {
         reader.push(data, unit => {
           firstFrameMs ??= performance.now() - start;
           lastFrameMs = performance.now() - start;
-          codec ??= inspectVideoAccessUnit(unit, format).codec;
-          units.push(Buffer.from(unit));
+          codec ??= inspectVideoAccessUnit(unit.data, format).codec;
+          units.push(Buffer.from(unit.data));
+          captures.push({ id: unit.id, capturedAtUnixMs: unit.capturedAtUnixMs, captureToOutputMs: Math.max(0, Date.now() - unit.capturedAtUnixMs) });
         });
       } catch (error) { failure = error; child.kill("SIGTERM"); }
     });
@@ -39,9 +41,9 @@ for (const format of ["hevc", "h264"]) {
         const diagnostics = stderr.trim().split("\n").map(line => JSON.parse(line));
         const configuration = diagnostics.find(event => event.event === "configuration");
         const bytes = units.reduce((sum, unit) => sum + unit.length, 0);
-        const stats = { deviceId, format, codec, configuration, frames: units.length, bytes, firstFrameMs, frameDurationMs: lastFrameMs - firstFrameMs, fps: (units.length - 1) * 1000 / (lastFrameMs - firstFrameMs), durationMs: performance.now() - start };
+        const stats = { scope: "native-component", clockBasis: "capture/output on the same host, Unix milliseconds", deviceId, format, codec, configuration, frames: units.length, bytes, firstFrameMs, frameDurationMs: lastFrameMs - firstFrameMs, fps: (units.length - 1) * 1000 / (lastFrameMs - firstFrameMs), durationMs: performance.now() - start };
         await writeFile(new URL(`native-sample.${format}`, directory), Buffer.concat(units));
-        await writeFile(new URL(`native-sample-${format}.json`, directory), JSON.stringify({ ...stats, diagnostics }, null, 2));
+        await writeFile(new URL(`native-sample-${format}.json`, directory), JSON.stringify({ ...stats, captures, diagnostics }, null, 2));
         resolve(stats);
       } catch (error) { reject(error); }
     });

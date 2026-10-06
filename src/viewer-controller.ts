@@ -11,12 +11,14 @@ type ToolResult = Awaited<ReturnType<App["callServerTool"]>>;
 /** Results the model also reads keep the viewer's state in _meta; app-only results use structuredContent. */
 const resultData = (result: ToolResult) => (result._meta?.[DATA_META_KEY] ?? result.structuredContent) as Record<string, unknown> | undefined;
 type ScreenImage = { type: "image"; data: string; mimeType: "image/png" | "image/jpeg" };
-type PreviewWindow = Window & { __APPLE_DEVICE_HUB_PREVIEW__?: boolean };
+type PreviewWindow = Window & { __SIM_STAGE_PREVIEW__?: boolean };
 
-const preview = (window as PreviewWindow).__APPLE_DEVICE_HUB_PREVIEW__ === true;
-const useVideoRelay = !preview || new URLSearchParams(window.location.search).get("transport") === "mcp";
-const app = new App({ name: "apple-device-hub", version });
-const extensions = new OpenAIExtensions(app);
+let preview = false;
+let useVideoRelay = true;
+let app: App;
+let extensions: OpenAIExtensions;
+let attachment = 0;
+let disposeAttachment: (() => void) | undefined;
 let root: HTMLElement;
 let screen: HTMLImageElement;
 let videoCanvas: HTMLCanvasElement;
@@ -108,7 +110,7 @@ export interface ViewerState {
 let snapshot: ViewerState = {
   hub, selectedDeviceId, initialized, busy, ended, liveEnabled, videoReady, liveInput: false,
   videoMessage: "", videoError: false,
-  notice: "Connecting to Device Hub…", noticeError: false,
+  notice: "Connecting to Sim Stage…", noticeError: false,
   settings: {}, contextEnabled, attachmentStatus: "Attach a screen to your next message.", attached: false,
 };
 const listeners = new Set<() => void>();
@@ -129,17 +131,31 @@ function showNotice(message: string, error = false) {
 }
 
 function resultError(result: ToolResult) {
-  return result.content.filter(item => item.type === "text").map(item => item.text).join("\n") || "Device Hub could not complete this action.";
+  return result.content.filter(item => item.type === "text").map(item => item.text).join("\n") || "Sim Stage could not complete this action.";
 }
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const attached = attachment;
+  const currentApp = app;
+  const currentPreview = preview;
   let result: ToolResult;
-  if (preview) {
+  if (currentPreview) {
     const response = await fetch("/api/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, arguments: args }) });
-    if (!response.ok) throw new Error(`Device Hub transport failed (${response.status}).`);
+    if (!response.ok) throw new Error(`Sim Stage transport failed (${response.status}).`);
     result = await response.json() as ToolResult;
   } else {
-    result = await app.callServerTool({ name, arguments: args });
+    result = await currentApp.callServerTool({ name, arguments: args });
+  }
+  if (attached !== attachment || ended) {
+    if (name === "device_stream") {
+      const stream = result.structuredContent as unknown as SimulatorStream | undefined;
+      if (stream?.streamId) {
+        const parameters = { name: "device_stream_stop", arguments: { sessionId: stream.sessionId, streamId: stream.streamId } };
+        if (currentPreview) void fetch("/api/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(parameters) }).catch(() => {});
+        else void currentApp.callServerTool(parameters).catch(() => {});
+      }
+    }
+    throw new Error("Viewer attachment ended.");
   }
   if (result.isError) {
     if (result._meta?.errorCode === "SESSION_EXPIRED" && result._meta.sessionId === session?.id) clearSession();
@@ -151,6 +167,8 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
 function updateControls() { publish(); }
 
 function resetStream() {
+  streaming = false;
+  coordinateRefreshPending = false;
   lastFrameData = undefined;
   lastFrameUnchanged = false;
   staleSince = undefined;
@@ -210,7 +228,7 @@ function scheduleVideoObservation(delay = 5000) {
     const epoch = lifecycle;
     void captureCurrent(epoch).catch(error => {
       if (epoch === lifecycle && !ended) showNotice(errorMessage(error), true);
-    }).finally(() => scheduleVideoObservation());
+    }).finally(() => { if (epoch === lifecycle && !ended) scheduleVideoObservation(); });
   }, delay);
 }
 
@@ -221,7 +239,7 @@ function refreshVideoCoordinates() {
   const epoch = lifecycle;
   void captureCurrent(epoch).catch(error => {
     if (epoch === lifecycle && !ended) showNotice(errorMessage(error), true);
-  }).finally(() => { coordinateRefreshPending = false; });
+  }).finally(() => { if (epoch === lifecycle && !ended) coordinateRefreshPending = false; });
 }
 
 function stopVideoStream(stream: SimulatorStream) {
@@ -254,17 +272,18 @@ function videoTransport(stream: SimulatorStream): SimulatorVideoTransport {
   let stopped = false;
   let sequence = 0;
   return {
-    async read() {
-      const result = await callTool("device_stream_read", { sessionId: stream.sessionId, streamId: stream.streamId });
+    async read(recover = false) {
+      const started = performance.now();
+      const result = await callTool("device_stream_read", { sessionId: stream.sessionId, streamId: stream.streamId, ...(recover ? { recover: true } : {}) });
       if (stopped) return [];
-      const batch = result._meta?.["apple-device-hub/video"] as { sessionId?: string; streamId?: string; sequence?: unknown; frames?: unknown; active?: boolean; activity?: unknown; focus?: DeviceFocus } | undefined;
-      if (!batch || batch.sessionId !== stream.sessionId || batch.streamId !== stream.streamId || batch.active !== true || !Array.isArray(batch.frames) || !batch.frames.every(frame => typeof frame === "string")) throw new Error("Device Hub returned an incomplete video batch.");
+      const batch = result._meta?.["sim-stage/video"] as { sessionId?: string; streamId?: string; sequence?: unknown; frames?: unknown; active?: boolean; activity?: unknown; focus?: DeviceFocus } | undefined;
+      if (!batch || batch.sessionId !== stream.sessionId || batch.streamId !== stream.streamId || batch.active !== true || !Array.isArray(batch.frames) || !batch.frames.every(frame => typeof frame === "object" && frame !== null && Number.isInteger(frame.id) && Number.isFinite(frame.capturedAtUnixMs) && Number.isFinite(frame.ageMs) && typeof frame.data === "string")) throw new Error("Sim Stage returned an incomplete video batch.");
       // A lost or repeated batch breaks the decoder's reference chain.
-      if (batch.sequence !== sequence) throw new Error("Device Hub video batches arrived out of order.");
+      if (batch.sequence !== sequence) throw new Error("Sim Stage video batches arrived out of order.");
       sequence++;
       if (Array.isArray(batch.activity)) receiveActivity(stream.sessionId, batch.activity);
       followFocus(batch.focus);
-      return (batch.frames as string[]).map(decodeBase64);
+      return (batch.frames as { id: number; capturedAtUnixMs: number; ageMs: number; data: string }[]).map(frame => ({ ...frame, ageMs: frame.ageMs + performance.now() - started, data: decodeBase64(frame.data) }));
     },
     stop() {
       if (stopped) return;
@@ -314,11 +333,11 @@ async function startVideo() {
       if (stream?.sessionId === current.id && typeof stream.streamId === "string") stopVideoStream(stream);
       return;
     }
-    if (!stream || stream.sessionId !== current.id || typeof stream.url !== "string" || typeof stream.codec !== "string" || !Number.isFinite(stream.fps) || stream.fps <= 0) throw new Error("Device Hub returned an incomplete video stream.");
-    if (stream.format !== undefined && stream.format !== format) throw new Error("Device Hub returned a different video codec than requested.");
+    if (!stream || stream.sessionId !== current.id || typeof stream.url !== "string" || typeof stream.codec !== "string" || !Number.isFinite(stream.fps) || stream.fps <= 0) throw new Error("Sim Stage returned an incomplete video stream.");
+    if (stream.format !== undefined && stream.format !== format) throw new Error("Sim Stage returned a different video codec than requested.");
     // Embedded hosts block loopback WebSockets; video stays on the app's MCP bridge.
     if (useVideoRelay) {
-      if (typeof stream.streamId !== "string" || !/^[a-f0-9]{48}$/.test(stream.streamId)) throw new Error("Device Hub returned an incomplete video stream. Reload the updated plugin to reconnect.");
+      if (typeof stream.streamId !== "string" || !/^[a-f0-9]{48}$/.test(stream.streamId)) throw new Error("Sim Stage returned an incomplete video stream. Reload the updated plugin to reconnect.");
       transport = videoTransport(stream);
     }
     const startedAt = performance.now();
@@ -408,6 +427,7 @@ function liveInputReady() {
 }
 
 function resetLiveInput() {
+  liveSending = false;
   liveTouch = undefined;
   liveQueue = [];
   liveInputAt = undefined;
@@ -438,11 +458,13 @@ async function sendLiveInput() {
   const events = liveQueue;
   liveQueue = [];
   liveSending = true;
+  const attached = attachment;
+  const epoch = lifecycle;
   try {
     await callTool("device_input", { sessionId: current.id, events });
   } catch (error) {
     // Input sent as video stops fails harmlessly; only a failure with video running disables live input.
-    if (session?.id === current.id && liveInputReady()) {
+    if (attached === attachment && epoch === lifecycle && session?.id === current.id && liveInputReady()) {
       liveInputError = errorMessage(error);
       liveTouch = undefined;
       liveQueue = [];
@@ -450,6 +472,7 @@ async function sendLiveInput() {
       showNotice(`${liveInputError} Using Xcode input instead.`, true);
     }
   } finally {
+    if (attached !== attachment || epoch !== lifecycle) return;
     liveSending = false;
     if (liveQueue.length) void sendLiveInput();
   }
@@ -500,6 +523,7 @@ function schedulePoll() {
 
 async function run(operation: () => Promise<void>, message?: string) {
   if (busy || ended) return false;
+  const attached = attachment;
   busy = true;
   frameGeneration++;
   stopPolling();
@@ -507,11 +531,12 @@ async function run(operation: () => Promise<void>, message?: string) {
   if (message) showNotice(message);
   try {
     await operation();
-    return true;
+    return attached === attachment && !ended;
   } catch (error) {
-    if (!ended) showNotice(errorMessage(error), true);
+    if (attached === attachment && !ended) showNotice(errorMessage(error), true);
     return false;
   } finally {
+    if (attached !== attachment) return false;
     busy = false;
     updateControls();
     schedulePoll();
@@ -592,20 +617,28 @@ function clearSession() {
   schedulePoll();
 }
 
+function applyConnection(result: ToolResult) {
+  const value = resultData(result);
+  const connected = sessionSchema.parse(value);
+  if (!value?.observation) throw new Error("Sim Stage returned an incomplete connection observation.");
+  selectSession(connected);
+  applyCapture({ ...result, _meta: { ...result._meta, [DATA_META_KEY]: value.observation } });
+}
+
 function applyCapture(result: ToolResult, epoch = lifecycle) {
   if (ended || epoch !== lifecycle) return;
   const structured = resultData(result) as unknown as CaptureState | undefined;
   const hierarchy = result._meta?.[HIERARCHY_META_KEY];
   const next = structured && typeof hierarchy === "string" ? { ...structured, hierarchy } : structured;
   const image = result.content.find(item => item.type === "image" && (item.mimeType === "image/png" || item.mimeType === "image/jpeg"));
-  if (!next?.session || !next.coordinateSpace || !next.screenshot || !image || image.type !== "image") throw new Error("Device Hub returned an incomplete screen capture.");
+  if (!next?.session || !next.coordinateSpace || !next.screenshot || !image || image.type !== "image") throw new Error("Sim Stage returned an incomplete screen capture.");
   if (retiredSessionIds.has(next.session.id)) return;
   if (session && next.session.id !== session.id) return;
   if (!session) selectSession(sessionSchema.parse(next.session));
   session = next.session;
   // Live frames carry no hierarchy; keep the last observed tree until a full capture replaces it.
   capture = next.hierarchy === undefined && next.session.accessibilityEnabled && capture?.hierarchy !== undefined ? { ...next, hierarchy: capture.hierarchy } : next;
-  if (next.settings) observedSettings = { ...observedSettings, ...next.settings };
+  if (next.settings) observedSettings = next.settings;
   screenImage = { type: "image", data: image.data, mimeType: image.mimeType as ScreenImage["mimeType"] };
   screen.src = `data:${image.mimeType};base64,${image.data}`;
   screen.width = next.screenshot.width;
@@ -641,7 +674,7 @@ async function refreshLive() {
   if (session?.device.kind === "simulator" && videoFailures < 4) { syncVideo(); return; }
   if (!session) {
     await run(async () => {
-      const result = await callTool("device_hub_status", {});
+      const result = await callTool("sim_stage_status", {});
       applyHub(resultData(result) as unknown as HubState);
     });
     return;
@@ -679,8 +712,7 @@ async function switchToDevice(deviceId: string, message: string) {
     const result = await callTool("device_connect", { deviceId });
     if (ended) return;
     focusHandledAt = new Date().toISOString();
-    selectSession(sessionSchema.parse(resultData(result)));
-    await captureCurrent();
+    applyConnection(result);
   }, message);
 }
 
@@ -713,9 +745,11 @@ async function streamFrame(current: Session) {
       lastFrameData = image.data;
     }
   } catch (error) {
+    if (epoch !== lifecycle || ended) return;
     frameFailures++;
     if (!ended && session) showNotice(errorMessage(error), true);
   } finally {
+    if (epoch !== lifecycle || ended) return;
     streaming = false;
     schedulePoll();
   }
@@ -733,19 +767,19 @@ export async function performAction(action: DeviceAction) {
   const epoch = lifecycle;
   return run(async () => {
     // The live stream shows animations, so the viewer skips the agent-oriented idle wait.
-    const result = await callTool("device_action", { sessionId: current.id, action, settle: false, resolution: "full", screenshot: "always" });
+    const result = await callTool("device_action", { sessionId: current.id, action, ...("element" in action && action.element?.ref ? { snapshot: capture?.snapshot } : {}), settle: false, resolution: "full", screenshot: "always" });
     applyCapture(result, epoch);
   }, action.type === "openSettings" ? "Opening Settings…" : "Updating device…");
 }
 
-export async function changeSettings(settings: DeviceSettings) {
+export async function changeSettings(settings?: DeviceSettings) {
   if (!session) return;
   const current = session;
   const epoch = lifecycle;
   return run(async () => {
-    const result = await callTool("device_settings", { sessionId: current.id, settings, resolution: "full", screenshot: "always" });
+    const result = await callTool("device_settings", { sessionId: current.id, ...(settings ? { settings } : {}), resolution: "full", screenshot: "always" });
     applyCapture(result, epoch);
-  }, "Applying device settings…");
+  }, settings ? "Applying device settings…" : "Refreshing device settings…");
 }
 
 function applyTheme(context: ReturnType<App["getHostContext"]>) {
@@ -791,6 +825,7 @@ export async function attachScreen() {
     let attached = false;
     if (modelContext) attached = Boolean(await modelContext.update(payload));
     else await app.updateModelContext(payload);
+    if (epoch !== lifecycle || ended) return;
     attachedAt = attached ? currentCapture.capturedAt : undefined;
     publish({ attachmentStatus: attached ? attachmentLabel() : "Screen sent. Host attachment status is unavailable.", attached });
     showNotice("Current screen sent to conversation context.");
@@ -816,14 +851,11 @@ function receiveResult(result: ToolResult) {
   } else {
     const connected = sessionSchema.safeParse(value);
     if (connected.success) {
-      selectSession(connected.data);
-      if (initialized) void refreshCapture();
+      applyConnection(result);
     }
   }
   schedulePoll();
 }
-
-export function selectDevice(id: string) { selectedDeviceId = id; publish(); }
 
 /** Connects a device chosen from the device list in one step. */
 export async function connectDevice(id: string) {
@@ -851,15 +883,14 @@ export async function toggleConnection() {
       const result = await callTool("device_connect", { deviceId: selectedDeviceId });
       if (ended) return;
       focusHandledAt = new Date().toISOString();
-      selectSession(sessionSchema.parse(resultData(result)));
-      await captureCurrent();
+      applyConnection(result);
     }
   }, session ? "Disconnecting device…" : "Connecting device…");
 }
 
 export async function scanDevices() {
   await run(async () => {
-    const result = await callTool("device_hub_status", {});
+    const result = await callTool("sim_stage_status", {});
     applyHub(resultData(result) as unknown as HubState);
     if (session && !capture) await captureCurrent();
     else if (session) showNotice("Device list refreshed.");
@@ -907,8 +938,16 @@ function devicePoint(event: PointerEvent) {
   return screenToDevicePoint({ x: event.clientX, y: event.clientY }, rect, capture.coordinateSpace);
 }
 
+const removers: (() => void)[] = [];
+function listen(target: EventTarget, name: string, listener: EventListener) {
+  target.addEventListener(name, listener);
+  removers.push(() => target.removeEventListener(name, listener));
+}
+function listenScreen<K extends keyof HTMLElementEventMap>(name: K, listener: (event: HTMLElementEventMap[K]) => void) {
+  listen(screenFrame, name, listener as EventListener);
+}
 function bindScreen() {
-screenFrame.addEventListener("pointerdown", event => {
+listenScreen("pointerdown", event => {
   if (!session || ended || event.button !== 0 || liveTouch) return;
   if (!inspecting && liveInputReady()) {
     const point = framePoint(event);
@@ -929,7 +968,7 @@ screenFrame.addEventListener("pointerdown", event => {
   screenFrame.setPointerCapture(event.pointerId);
   placeGestureMark(event);
 });
-screenFrame.addEventListener("pointermove", event => {
+listenScreen("pointermove", event => {
   if (liveTouch?.id !== event.pointerId) return;
   const point = framePoint(event);
   if (!point) return;
@@ -937,7 +976,7 @@ screenFrame.addEventListener("pointermove", event => {
   placeGestureMark(event);
   if (liveTouch.epoch === lifecycle) queueLiveInput({ type: "move", ...point, dt: elapsedInput(eventTime(event)) });
 });
-screenFrame.addEventListener("pointerup", event => {
+listenScreen("pointerup", event => {
   if (liveTouch?.id === event.pointerId) { finishLiveTouch(event, "up"); return; }
   const start = pointerStart;
   pointerStart = undefined;
@@ -950,60 +989,119 @@ screenFrame.addEventListener("pointerup", event => {
   if (distance < 8) void performAction({ type: "tap", x: start.x, y: start.y });
   else void performAction({ type: "swipe", x: start.x, y: start.y, toX: end.x, toY: end.y, duration: Math.max(0.1, Math.min(5, (performance.now() - start.time) / 1000)) });
 });
-screenFrame.addEventListener("pointercancel", event => {
+listenScreen("pointercancel", event => {
   if (liveTouch?.id === event.pointerId) { finishLiveTouch(event, "cancel"); return; }
   pointerStart = undefined;
   gestureMark.hidden = true;
   schedulePoll();
 });
-screenFrame.addEventListener("contextmenu", event => event.preventDefault());
-document.addEventListener("visibilitychange", schedulePoll);
+listenScreen("contextmenu", event => event.preventDefault());
+listen(document, "visibilitychange", schedulePoll);
 }
 
-let observer: IntersectionObserver;
-function endView() {
-  ended = true;
+let observer: IntersectionObserver | undefined;
+function endView() { disposeAttachment?.(); }
+
+function resetAttachment() {
+  selectedDeviceId = "";
+  liveEnabled = true;
+  inspecting = settingsOpen = false;
+  pickElement = undefined;
+  hub = { devices: [], sessions: [], warnings: [] };
+  session = capture = screenImage = undefined;
+  busy = initialized = ended = disconnecting = streaming = liveSending = false;
+  visible = true;
+  pointerStart = undefined;
+  coordinateRefreshPending = false;
+  contextEnabled = false;
+  observedSettings = {};
+  attachedAt = activity = undefined;
+  retiredSessionIds.clear();
+  resetStream();
+  resetLiveInput();
+  h264Fallback = false;
+  joinedOnOpen = false;
+  pendingSwitch = undefined;
+  focusHandledAt = new Date().toISOString();
+  snapshot = { hub, selectedDeviceId, initialized, busy, ended, liveEnabled, videoReady: false, liveInput: false, videoMessage: "", videoError: false, notice: "Connecting to Sim Stage…", noticeError: false, settings: {}, contextEnabled, attachmentStatus: "Attach a screen to your next message.", attached: false };
+}
+
+/** The mounted surface owns this attachment, including host setup and cleanup. */
+export function initializeViewer(nodes: { root: HTMLElement; screen: HTMLImageElement; canvas: HTMLCanvasElement; frame: HTMLElement; gesture: HTMLElement }) {
+  disposeAttachment?.();
+  const attached = ++attachment;
   lifecycle++;
-  stopPolling();
-  stopVideo();
-  observer?.disconnect();
-  updateControls();
-}
-app.onteardown = async () => { endView(); return {}; };
-app.addEventListener("toolresult", receiveResult);
-app.addEventListener("toolcancelled", ({ reason }) => showNotice(reason ?? "Device action cancelled.", true));
-app.addEventListener("hostcontextchanged", context => {
-  applyTheme(context);
-  if (Object.hasOwn(context, OPENAI_MODEL_CONTEXT_KEY)) syncAttachment();
-});
-app.onerror = error => { if (!ended) showNotice(errorMessage(error), true); };
-
-export async function initializeViewer(nodes: { root: HTMLElement; screen: HTMLImageElement; canvas: HTMLCanvasElement; frame: HTMLElement; gesture: HTMLElement }) {
+  frameGeneration++;
+  resetAttachment();
   root = nodes.root; screen = nodes.screen; videoCanvas = nodes.canvas; screenFrame = nodes.frame; gestureMark = nodes.gesture;
+  videoCanvas.hidden = screenFrame.hidden = gestureMark.hidden = true;
+  screen.removeAttribute("src");
+  preview = (window as PreviewWindow).__SIM_STAGE_PREVIEW__ === true;
+  useVideoRelay = !preview || new URLSearchParams(window.location.search).get("transport") === "mcp";
+  const currentApp = app = new App({ name: "sim-stage", version }, {}, { autoResize: false });
+  extensions = new OpenAIExtensions(app);
+  const active = () => attached === attachment && !ended;
   bindScreen();
-  observer = new IntersectionObserver(entries => { visible = entries.some(entry => entry.isIntersecting); schedulePoll(); });
+  observer = new IntersectionObserver(entries => { if (active()) { visible = entries.some(entry => entry.isIntersecting); schedulePoll(); } });
   observer.observe(root);
-  window.addEventListener("pagehide", endView);
-  window.addEventListener("beforeunload", endView);
-  try {
-    if (preview) {
-      applyDocumentTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-      publish({ attachmentStatus: "Screen attachment is available inside ChatGPT." });
-      initialized = true;
-      await run(async () => { receiveResult(await callTool("device_hub_status", {})); });
-    } else {
-      await app.connect();
-      initialized = true;
-      applyTheme(app.getHostContext());
-      contextEnabled = Boolean(app.getHostCapabilities()?.updateModelContext?.image);
-      if (!contextEnabled) publish({ attachmentStatus: "This host does not support screen attachments." });
-      syncAttachment();
+  listen(window, "pagehide", endView);
+  listen(window, "beforeunload", endView);
+  const toolresult = (result: ToolResult) => { if (active()) receiveResult(result); };
+  const cancelled = ({ reason }: { reason?: string }) => { if (active()) showNotice(reason ?? "Device action cancelled.", true); };
+  const contextChanged = (context: ReturnType<App["getHostContext"]>) => { if (active()) { applyTheme(context); if (context && Object.hasOwn(context, OPENAI_MODEL_CONTEXT_KEY)) syncAttachment(); } };
+  app.addEventListener("toolresult", toolresult);
+  app.addEventListener("toolcancelled", cancelled);
+  app.addEventListener("hostcontextchanged", contextChanged);
+  app.onteardown = async () => { if (active()) endView(); return {}; };
+  app.onerror = error => { if (active()) showNotice(errorMessage(error), true); };
+  const dispose = () => {
+    if (!active()) return;
+    ended = true;
+    attachment++;
+    lifecycle++;
+    frameGeneration++;
+    stopPolling();
+    stopVideo(true);
+    observer?.disconnect();
+    observer = undefined;
+    removers.splice(0).forEach(remove => remove());
+    currentApp.removeEventListener("toolresult", toolresult);
+    currentApp.removeEventListener("toolcancelled", cancelled);
+    currentApp.removeEventListener("hostcontextchanged", contextChanged);
+    currentApp.onteardown = undefined;
+    currentApp.onerror = undefined;
+    if (!preview) void currentApp.close().catch(() => {});
+    session = capture = screenImage = undefined;
+    observedSettings = {};
+    busy = initialized = false;
+    resetLiveInput();
+    updateControls();
+  };
+  disposeAttachment = dispose;
+  const ready = (async () => {
+    try {
+      if (preview) {
+        applyDocumentTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        publish({ attachmentStatus: "Screen attachment is available inside ChatGPT." });
+        initialized = true;
+        await run(async () => { receiveResult(await callTool("sim_stage_status", {})); });
+      } else {
+        await currentApp.connect();
+        if (!active()) { void currentApp.close().catch(() => {}); return; }
+        removers.push(currentApp.setupSizeChangedNotifications());
+        initialized = true;
+        applyTheme(app.getHostContext());
+        contextEnabled = Boolean(app.getHostCapabilities()?.updateModelContext?.image);
+        if (!contextEnabled) publish({ attachmentStatus: "This host does not support screen attachments." });
+        syncAttachment();
+      }
+      if (!active()) return;
+      updateControls();
+      if (session && !capture) await refreshCapture();
+      else schedulePoll();
+    } catch (error) {
+      if (active()) { showNotice(errorMessage(error), true); updateControls(); }
     }
-    updateControls();
-    if (session && !capture) await refreshCapture();
-    else schedulePoll();
-  } catch (error) {
-    showNotice(errorMessage(error), true);
-    updateControls();
-  }
+  })();
+  return { ready, dispose };
 }

@@ -1,8 +1,7 @@
 node_modules/
 artifacts/*
 !artifacts/.gitkeep
-plugins/apple-device-hub/dist/
-packages/apple-device-hub-mcp/dist/
+packages/sim-stage-mcp/dist/
 release/
 .dev-plugin/
 .DS_Store

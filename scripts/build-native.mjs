@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const destination = "packages/apple-device-hub-mcp/dist";
+const destination = "packages/sim-stage-mcp/dist";
 await mkdir(new URL(`../${destination}/`, import.meta.url), { recursive: true });
 
 const compilation = spawnSync("xcrun", ["clang", "-arch", "arm64", "-fobjc-arc", "-fblocks", "-O2", "-Wall", "-Wextra", "-Wno-unused-parameter", "-mmacosx-version-min=14.0", "native/SimulatorStream.m", "-o", `${destination}/simulator-stream`, "-framework", "Foundation", "-framework", "CoreImage", "-framework", "CoreVideo", "-framework", "CoreMedia", "-framework", "CoreGraphics", "-framework", "VideoToolbox", "-framework", "IOSurface", "-framework", "ImageIO"], { cwd: root, stdio: "inherit" });

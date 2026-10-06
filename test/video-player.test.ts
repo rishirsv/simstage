@@ -1,16 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getEventListeners } from "node:events";
-import { coordinateSpaceMatchesFrame, inspectH264AccessUnit, SimulatorVideoPlayer } from "../src/video-player.js";
+import { coordinateSpaceMatchesFrame, SimulatorVideoPlayer, type SimulatorVideoFrame } from "../src/video-player.js";
 
 const keyframe = new Uint8Array([0, 0, 0, 1, 0x67, 0x42, 0xe0, 0x1f, 0xaa, 0, 0, 1, 0x68, 0xbb, 0, 0, 0, 1, 0x65, 0xcc]);
+let frameId = 0;
+function envelope(data: Uint8Array, ageMs = 0): SimulatorVideoFrame { return { id: ++frameId, capturedAtUnixMs: Date.now() - ageMs, ageMs, data }; }
 const delta = new Uint8Array([0, 0, 1, 0x41, 0xcc]);
-
-test("Annex B inspection reads mixed start codes and the actual SPS codec", () => {
-  assert.deepEqual(inspectH264AccessUnit(keyframe), { keyFrame: true, hasPicture: true, hasParameterSets: true, codec: "avc1.42E01F" });
-  assert.deepEqual(inspectH264AccessUnit(delta), { keyFrame: false, hasPicture: true, hasParameterSets: false, codec: undefined });
-  assert.equal(inspectH264AccessUnit(new Uint8Array([0, 0, 1, 0x09, 0xf0])).hasPicture, false);
-});
 
 test("touch mapping accepts scaled frames and rejects the preceding rotation", () => {
   assert.equal(coordinateSpaceMatchesFrame({ width: 440, height: 956 }, { width: 1320, height: 2868 }), true);
@@ -18,7 +14,8 @@ test("touch mapping accepts scaled frames and rejects the preceding rotation", (
   assert.equal(coordinateSpaceMatchesFrame({ width: 0, height: 956 }, { width: 1320, height: 2868 }), false);
 });
 
-function fakeBrowser(run: (browser: { decoder: () => FakeDecoder; socket: () => FakeSocket; canvas: HTMLCanvasElement; draws: unknown[]; decoders: FakeDecoder[]; sockets: FakeSocket[]; timers: Map<number, { callback: () => void; delay: number }> }) => void | Promise<void>, options: { socketError?: Error; decodeInTasks?: boolean } = {}): void | Promise<void> {
+function fakeBrowser(run: (browser: { decoder: () => FakeDecoder; socket: () => FakeSocket; canvas: HTMLCanvasElement; draws: unknown[]; decoders: FakeDecoder[]; sockets: FakeSocket[]; timers: Map<number, { callback: () => void; delay: number }>; paint: () => void }) => void | Promise<void>, options: { socketError?: Error; decodeInTasks?: boolean; now?: () => number } = {}): void | Promise<void> {
+  frameId = 0;
   let decoder: FakeDecoder;
   let socket: FakeSocket;
   const draws: unknown[] = [];
@@ -26,6 +23,8 @@ function fakeBrowser(run: (browser: { decoder: () => FakeDecoder; socket: () => 
   const sockets: FakeSocket[] = [];
   const timers = new Map<number, { callback: () => void; delay: number }>();
   let nextTimer = 0;
+  const paints = new Map<number, FrameRequestCallback>();
+  const paint = () => { const callbacks = [...paints.values()]; paints.clear(); callbacks.forEach(callback => callback(performance.now())); };
   class BrowserDecoder extends FakeDecoder {
     constructor(callbacks: VideoDecoderInit) { super(callbacks); decoder = this; decoders.push(this); }
     override decode(chunk: { init: EncodedVideoChunkInit }) {
@@ -36,7 +35,7 @@ function fakeBrowser(run: (browser: { decoder: () => FakeDecoder; socket: () => 
           if (this.state === "closed") return;
           this.decodeQueueSize--;
           this.dispatchEvent(new Event("dequeue"));
-          this.callbacks.output({ displayWidth: 440, displayHeight: 956, close() {} } as unknown as VideoFrame);
+          this.callbacks.output({ timestamp: chunk.init.timestamp, displayWidth: 440, displayHeight: 956, close() {} } as unknown as VideoFrame);
         });
       }
     }
@@ -49,9 +48,12 @@ function fakeBrowser(run: (browser: { decoder: () => FakeDecoder; socket: () => 
   }
   const globals = globalThis as unknown as Record<string, unknown>;
   const replacements = {
+    ...(options.now ? { performance: { now: options.now } } : {}),
     VideoDecoder: BrowserDecoder, EncodedVideoChunk: BrowserChunk, WebSocket: BrowserSocket,
     setTimeout: (callback: () => void, delay: number) => { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; },
     clearTimeout: (id: number) => { timers.delete(id); },
+    requestAnimationFrame: (callback: FrameRequestCallback) => { const id = ++nextTimer; paints.set(id, callback); return id; },
+    cancelAnimationFrame: (id: number) => { paints.delete(id); },
   };
   const previous = Object.keys(replacements).map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   for (const [name, value] of Object.entries(replacements)) Object.defineProperty(globals, name, { value, configurable: true, writable: true });
@@ -63,7 +65,7 @@ function fakeBrowser(run: (browser: { decoder: () => FakeDecoder; socket: () => 
     }
   };
   try {
-    const result = run({ decoder: () => decoder!, socket: () => socket!, canvas, draws, decoders, sockets, timers });
+    const result = run({ decoder: () => decoder!, socket: () => socket!, canvas, draws, decoders, sockets, timers, paint });
     if (result) return result.finally(restore);
     restore();
   } catch (error) { restore(); throw error; }
@@ -83,6 +85,10 @@ class FakeDecoder extends EventTarget {
 }
 
 class FakeSocket {
+  static OPEN = 1;
+  readyState = 1;
+  sent: string[] = [];
+  send(message: string) { this.sent.push(message); }
   binaryType = "";
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: (() => void) | null = null;
@@ -90,7 +96,14 @@ class FakeSocket {
   closes = 0;
   constructor(readonly url: string) {}
   close() { this.closes++; }
-  sendFrame(data: Uint8Array) { this.onmessage?.({ data: data.slice().buffer } as MessageEvent); }
+  sendFrame(data: Uint8Array) {
+    const bytes = new Uint8Array(data.length + 16);
+    const header = new DataView(bytes.buffer);
+    header.setBigUint64(0, BigInt(++frameId));
+    header.setBigUint64(8, BigInt(Date.now()));
+    bytes.set(data, 16);
+    this.onmessage?.({ data: bytes.buffer } as MessageEvent);
+  }
 }
 
 test("video waits for a complete IDR, catches up after backpressure, and releases every frame on teardown", () => {
@@ -111,17 +124,19 @@ test("video waits for a complete IDR, catches up after backpressure, and release
       assert.equal(decoder.configs[0].description, undefined);
       socket.sendFrame(delta);
       assert.deepEqual(decoder.chunks.map(chunk => chunk.init.type), ["key", "delta"]);
-      assert.deepEqual(decoder.chunks.map(chunk => chunk.init.timestamp), [0, 33333]);
+      assert.deepEqual(decoder.chunks.map(chunk => chunk.init.timestamp), [3 * 33333, 4 * 33333]);
       decoder.decodeQueueSize = 5;
       socket.sendFrame(delta);
       socket.sendFrame(delta);
       assert.equal(decoder.resets, 1);
+      assert.ok(socket.sent.includes("keyframe"));
       assert.equal(decoder.chunks.length, 2);
       socket.sendFrame(keyframe);
       assert.equal(decoder.chunks.length, 3);
       let closes = 0;
-      const frame = { displayWidth: 1320, displayHeight: 2868, close: () => { closes++; } } as unknown as VideoFrame;
+      const frame = { timestamp: decoder.chunks.at(-1)!.init.timestamp, displayWidth: 1320, displayHeight: 2868, close: () => { closes++; } } as unknown as VideoFrame;
       decoder.callbacks.output(frame);
+      browser.paint();
       assert.equal(closes, 1);
       assert.deepEqual(dimensions, [{ width: 1320, height: 2868 }]);
       assert.equal(browser.draws.length, 1);
@@ -215,7 +230,9 @@ test("stopping from the rendered-frame callback leaves no watchdog behind", () =
     const player = new SimulatorVideoPlayer(browser.canvas, { sessionId: "session", url: "ws://127.0.0.1:1234/video/token", codec: "avc1.42E01F", fps: 30 }, () => player.stop(), error => assert.fail(error.message));
     player.start();
     let closes = 0;
-    browser.decoder().callbacks.output({ displayWidth: 440, displayHeight: 956, close: () => { closes++; } } as unknown as VideoFrame);
+    browser.socket().sendFrame(keyframe);
+    browser.decoder().callbacks.output({ timestamp: browser.decoder().chunks.at(-1)!.init.timestamp, displayWidth: 440, displayHeight: 956, close: () => { closes++; } } as unknown as VideoFrame);
+    browser.paint();
     assert.equal(closes, 1);
     assert.equal(browser.timers.size, 0);
     assert.equal(browser.socket().closes, 1);
@@ -229,7 +246,9 @@ test("startup permits native error reporting while decoded-frame stalls fail pro
     try {
       player.start();
       assert.equal([...browser.timers.values()][0].delay, 20_000);
-      browser.decoder().callbacks.output({ displayWidth: 440, displayHeight: 956, close: () => {} } as unknown as VideoFrame);
+      browser.socket().sendFrame(keyframe);
+      browser.decoder().callbacks.output({ timestamp: browser.decoder().chunks.at(-1)!.init.timestamp, displayWidth: 440, displayHeight: 956, close: () => {} } as unknown as VideoFrame);
+      browser.paint();
       assert.equal(browser.timers.size, 1);
       const watchdog = [...browser.timers.values()][0];
       assert.equal(watchdog.delay, 5000);
@@ -262,7 +281,7 @@ test("a native capture error closes the transport and reports one actionable fai
 
 test("MCP transport keeps one read in flight and discards late batches after stopping", async () => {
   await fakeBrowser(async browser => {
-    const reads: Array<(frames: Uint8Array[]) => void> = [];
+    const reads: Array<(frames: SimulatorVideoFrame[]) => void> = [];
     let stops = 0;
     let activeReads = 0;
     let maximumReads = 0;
@@ -271,7 +290,7 @@ test("MCP transport keeps one read in flight and discards late batches after sto
       read() {
         activeReads++;
         maximumReads = Math.max(maximumReads, activeReads);
-        return new Promise<Uint8Array[]>(resolve => { reads.push(resolve); }).finally(() => { activeReads--; });
+        return new Promise<SimulatorVideoFrame[]>(resolve => { reads.push(resolve); }).finally(() => { activeReads--; });
       },
       stop() { stops++; },
     });
@@ -280,13 +299,13 @@ test("MCP transport keeps one read in flight and discards late batches after sto
       player.start();
       assert.equal(reads.length, 1);
       assert.equal(browser.sockets.length, 0, "embedded transport never opens a blocked WebSocket");
-      reads.shift()!([delta, keyframe, delta]);
+      reads.shift()!([delta, keyframe, delta].map(data => envelope(data)));
       await flush();
       assert.deepEqual(browser.decoder().chunks.map(chunk => chunk.init.type), ["key", "delta"]);
       assert.equal(reads.length, 1);
       assert.equal(maximumReads, 1);
       browser.decoder().decodeQueueSize = 6;
-      reads.shift()!([delta]);
+      reads.shift()!([envelope(delta)]);
       await flush();
       assert.equal(browser.decoder().resets, 0, "ordinary batch decoding does not discard its GOP");
       assert.equal(reads.length, 0, "the next batch waits for decoder backpressure to clear");
@@ -295,7 +314,7 @@ test("MCP transport keeps one read in flight and discards late batches after sto
       await flush();
       player.stop();
       const chunks = browser.decoder().chunks.length;
-      reads.shift()!([keyframe]);
+      reads.shift()!([envelope(keyframe)]);
       await flush();
       assert.equal(browser.decoder().chunks.length, chunks);
       assert.equal(browser.decoder().state, "closed");
@@ -313,7 +332,7 @@ test("native MCP capture errors close the relay and report once", async () => {
     let stops = 0;
     const errors: Error[] = [];
     const player = new SimulatorVideoPlayer(browser.canvas, { sessionId: "session", streamId: "token", url: "ws://blocked", codec: "avc1.42E01F", fps: 30 }, () => {}, error => errors.push(error), {
-      read: () => new Promise<Uint8Array[]>((_resolve, reject) => { rejectRead = reject; }),
+      read: () => new Promise<SimulatorVideoFrame[]>((_resolve, reject) => { rejectRead = reject; }),
       stop() { stops++; },
     });
     try {
@@ -330,19 +349,21 @@ test("native MCP capture errors close the relay and report once", async () => {
   });
 });
 
-test("a full relay batch renders without resetting the queued keyframe", async () => {
+test("a relay burst decodes dependencies and paints only the latest completed frame", async () => {
   await fakeBrowser(async browser => {
-    const reads: Array<(frames: Uint8Array[]) => void> = [];
+    const reads: Array<(frames: SimulatorVideoFrame[]) => void> = [];
     let stops = 0;
     const player = new SimulatorVideoPlayer(browser.canvas, { sessionId: "session", streamId: "token", url: "ws://blocked", codec: "avc1.42E01F", fps: 30 }, () => {}, error => assert.fail(error.message), {
-      read: () => new Promise<Uint8Array[]>(resolve => { reads.push(resolve); }),
+      read: () => new Promise<SimulatorVideoFrame[]>(resolve => { reads.push(resolve); }),
       stop() { stops++; },
     });
     try {
       player.start();
-      reads.shift()!([keyframe, ...Array.from({ length: 29 }, () => delta)]);
-      for (let tick = 0; tick < 40 && browser.draws.length < 30; tick++) await new Promise<void>(resolve => setImmediate(resolve));
-      assert.equal(browser.draws.length, 30);
+      reads.shift()!([keyframe, ...Array.from({ length: 29 }, () => delta)].map(data => envelope(data)));
+      for (let tick = 0; tick < 40 && browser.decoder().chunks.length < 30; tick++) await new Promise<void>(resolve => setImmediate(resolve));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      browser.paint();
+      assert.equal(browser.draws.length, 1);
       assert.equal(browser.decoder().chunks.length, 30);
       assert.equal(browser.decoder().resets, 0);
       assert.equal(reads.length, 1, "the next bounded batch is requested after decoding");
@@ -357,17 +378,17 @@ test("a full relay batch renders without resetting the queued keyframe", async (
 
 test("stopping a relay while the decoder is full releases its dequeue waiter", async () => {
   await fakeBrowser(async browser => {
-    const reads: Array<(frames: Uint8Array[]) => void> = [];
+    const reads: Array<(frames: SimulatorVideoFrame[]) => void> = [];
     let stops = 0;
     const player = new SimulatorVideoPlayer(browser.canvas, { sessionId: "session", streamId: "token", url: "ws://blocked", codec: "avc1.42E01F", fps: 30 }, () => {}, error => assert.fail(error.message), {
-      read: () => new Promise<Uint8Array[]>(resolve => { reads.push(resolve); }),
+      read: () => new Promise<SimulatorVideoFrame[]>(resolve => { reads.push(resolve); }),
       stop() { stops++; },
     });
     player.start();
     const decoder = browser.decoder();
     const decode = decoder.decode.bind(decoder);
     decoder.decode = chunk => { decode(chunk); decoder.decodeQueueSize++; };
-    reads.shift()!([keyframe, ...Array.from({ length: 29 }, () => delta)]);
+    reads.shift()!([keyframe, ...Array.from({ length: 29 }, () => delta)].map(data => envelope(data)));
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(decoder.chunks.length, 4);
     assert.equal(getEventListeners(decoder, "dequeue").length, 1);
@@ -378,5 +399,83 @@ test("stopping a relay while the decoder is full releases its dequeue waiter", a
     assert.equal(reads.length, 0);
     assert.equal(stops, 1);
     assert.equal(browser.timers.size, 0);
+  });
+});
+
+test("expired relay chains recover at a fresh keyframe and release the age waiter", async () => {
+  let now = 0;
+  await fakeBrowser(async browser => {
+    const reads: Array<{ recover: boolean; resolve: (frames: SimulatorVideoFrame[]) => void }> = [];
+    const player = new SimulatorVideoPlayer(browser.canvas, { sessionId: "session", url: "ws://blocked", codec: "avc1.42E01F", fps: 30 }, () => {}, error => assert.fail(error.message), {
+      read: recover => new Promise(resolve => reads.push({ recover: !!recover, resolve })), stop() {},
+    });
+    const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+    player.start();
+    const decoder = browser.decoder();
+    const decode = decoder.decode.bind(decoder);
+    decoder.decode = chunk => { decode(chunk); decoder.decodeQueueSize++; };
+    const old = [keyframe, ...Array.from({ length: 8 }, () => delta)].map(data => envelope(data, 400));
+    reads.shift()!.resolve(old);
+    await flush();
+    assert.equal(decoder.chunks.length, 4);
+    assert.equal(getEventListeners(decoder, "dequeue").length, 1);
+    now = 101;
+    const timeout = [...browser.timers.values()].find(timer => timer.delay <= 100)!;
+    assert.ok(timeout, "decoder wait is bounded by remaining capture age");
+    timeout.callback();
+    await flush();
+    assert.equal(decoder.resets, 1);
+    assert.equal(getEventListeners(decoder, "dequeue").length, 0);
+    assert.equal(reads.length, 1);
+    assert.equal(reads[0]!.recover, true, "discarding any dependent frame requests a fresh GOP");
+    let retiredCloses = 0;
+    decoder.callbacks.output({ timestamp: decoder.chunks[0]!.init.timestamp, displayWidth: 440, displayHeight: 956, close: () => { retiredCloses++; } } as unknown as VideoFrame);
+    browser.paint();
+    assert.equal(retiredCloses, 1, "late output from the discarded decoder chain is closed");
+    assert.equal(browser.draws.length, 0);
+    const incomplete = envelope(delta);
+    const fresh = envelope(keyframe);
+    reads.shift()!.resolve([incomplete, fresh, envelope(delta)]);
+    await flush();
+    assert.deepEqual(decoder.chunks.slice(4).map(chunk => chunk.init.type), ["key", "delta"]);
+    assert.equal(decoder.chunks[4]!.init.timestamp, fresh.id * 33333, "recovery preserves native identity and its skipped-frame gap");
+    assert.equal(reads.length, 1, "only one RPC read remains pending");
+    let closes = 0;
+    const latest = decoder.chunks.at(-1)!.init.timestamp;
+    decoder.callbacks.output({ timestamp: latest, displayWidth: 956, displayHeight: 440, close: () => { closes++; } } as unknown as VideoFrame);
+    browser.paint();
+    assert.equal(browser.canvas.width, 956, "fresh rotated keyframe changes presentation dimensions");
+    assert.equal(browser.draws.length, 1);
+    assert.equal(closes, 1);
+    player.stop();
+    reads.shift()!.resolve([envelope(keyframe)]);
+    await flush();
+    assert.equal(browser.draws.length, 1);
+    assert.equal(browser.timers.size, 0);
+  }, { now: () => now });
+});
+
+test("decoded bursts retain the latest frame identity through a rendering opportunity", () => {
+  fakeBrowser(browser => {
+    const milestones: Array<{ phase: string; id: number }> = [];
+    const player = new SimulatorVideoPlayer(browser.canvas, { sessionId: "session", url: "ws://local", codec: "avc1.42E01F", fps: 30 }, () => {}, error => assert.fail(error.message), undefined, event => milestones.push(event));
+    player.start();
+    browser.socket().sendFrame(keyframe);
+    browser.socket().sendFrame(delta);
+    const decoder = browser.decoder();
+    let closes = 0;
+    for (const chunk of decoder.chunks) decoder.callbacks.output({ timestamp: chunk.init.timestamp, displayWidth: 440, displayHeight: 956, close: () => { closes++; } } as unknown as VideoFrame);
+    assert.equal(closes, 1, "superseded decoded frame is released before painting");
+    assert.equal(browser.draws.length, 0);
+    assert.equal(milestones.filter(event => event.phase === "decode").length, 2, "decode milestones record output completion before presentation");
+    browser.paint();
+    assert.equal(browser.draws.length, 1);
+    assert.equal(closes, 2);
+    assert.equal(milestones.filter(event => event.phase === "present").length, 0);
+    browser.paint();
+    const lastId = milestones.filter(event => event.phase === "received").at(-1)!.id;
+    assert.deepEqual(milestones.filter(event => ["draw", "present"].includes(event.phase)).map(event => event.phase), ["draw", "present"]);
+    assert.ok(milestones.filter(event => ["draw", "present"].includes(event.phase)).every(event => event.id === lastId));
+    player.stop();
   });
 });

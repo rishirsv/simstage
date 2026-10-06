@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { appHtml, callHubTool, type Hub } from "./mcp.js";
 
 export async function startPreview(hub: Hub, assetRoot: URL) {
-  const port = Number(process.env.APPLE_DEVICE_HUB_PREVIEW_PORT ?? 4319);
+  const port = Number(process.env.SIM_STAGE_PREVIEW_PORT ?? 4319);
   const origin = `http://127.0.0.1:${port}`;
   const server = createServer(async (request, response) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -24,6 +24,6 @@ export async function startPreview(hub: Hub, assetRoot: URL) {
     response.writeHead(404).end("Not found");
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
-  console.error(`Apple Device Hub preview: ${origin}`);
+  console.error(`Sim Stage preview: ${origin}`);
   return server;
 }

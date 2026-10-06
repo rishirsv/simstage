@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import type { DeviceActivity, DeviceFocus, LiveInput } from "./shared.js";
+import { VIDEO_MAX_FRAME_AGE_MS, type DeviceActivity, type DeviceFocus, type LiveInput } from "./shared.js";
 import { declareH264DecodeOrder, inspectVideoAccessUnit, provisionalCodec, type VideoCodec } from "./video-codec.js";
 
 /** The helper encodes each frame the simulator renders, which is 60 Hz on current runtimes. */
@@ -24,7 +24,8 @@ export interface VideoBatch {
   streamId: string;
   /** Batches are numbered in the order served, so a viewer can detect a lost or repeated batch. */
   sequence: number;
-  frames: string[];
+  /** Native capture Unix milliseconds are compared only on this server. */
+  frames: Array<{ id: number; capturedAtUnixMs: number; ageMs: number; data: string }>;
   active: true;
   /** Device actions since the previous batch, added by the hub. */
   activity?: DeviceActivity[];
@@ -32,16 +33,18 @@ export interface VideoBatch {
   focus?: DeviceFocus;
 }
 
-/** Native stdout is length-prefixed Annex B access units, independent of pipe chunk boundaries. */
+export interface NativeVideoFrame { id: number; capturedAtUnixMs: number; data: Buffer }
+
+/** Each length-prefixed record contains uint64be ID, uint64be Unix capture ms, then Annex B. */
 export class AccessUnitReader {
   private buffered = Buffer.alloc(0);
-  push(chunk: Buffer, consume: (unit: Buffer) => void) {
+  push(chunk: Buffer, consume: (frame: NativeVideoFrame) => void) {
     this.buffered = Buffer.concat([this.buffered, chunk]);
     while (this.buffered.length >= 4) {
       const size = this.buffered.readUInt32BE(0);
-      if (!size || size > 8 * 1024 * 1024) throw new Error("Invalid simulator video access unit.");
+      if (size <= 16 || size > 8 * 1024 * 1024) throw new Error("Invalid simulator video access unit.");
       if (this.buffered.length < size + 4) return;
-      consume(this.buffered.subarray(4, size + 4));
+      consume({ id: Number(this.buffered.readBigUInt64BE(4)), capturedAtUnixMs: Number(this.buffered.readBigUInt64BE(12)), data: this.buffered.subarray(20, size + 4) });
       this.buffered = this.buffered.subarray(size + 4);
     }
   }
@@ -102,6 +105,7 @@ interface Channel {
   keyframeRequestedAt?: number;
   heartbeat: ReturnType<typeof setInterval>;
   startup?: ReturnType<typeof setTimeout>;
+  settles: Map<number, { resolve: (quiet: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>;
 }
 interface Ticket { sessionId: string; deviceId: string; format: VideoCodec; maxDimension?: number; url: string; timer: ReturnType<typeof setTimeout> }
 interface PendingRead { resolve: (batch: VideoBatch) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -110,7 +114,7 @@ interface Relay {
   sessionId: string;
   streamId: string;
   channel: Channel;
-  frames: Buffer[];
+  frames: NativeVideoFrame[];
   bytes: number;
   waitingForKey: boolean;
   reads: PendingRead[];
@@ -149,6 +153,7 @@ export class SimulatorVideo {
   private readonly channels = new Map<string, Channel>();
   private readonly relays = new Map<string, Relay>();
   private closed = false;
+  private settleId = 0;
   constructor(private readonly options: SimulatorVideoOptions = {}) {}
 
   origin(): Promise<string> {
@@ -200,7 +205,7 @@ export class SimulatorVideo {
    * MCP app hosts read native access units without allowing loopback CSP. A
    * read returns as soon as frames are buffered, otherwise after READ_WAIT_MS.
    */
-  async read(sessionId: string, streamId: string): Promise<VideoBatch> {
+  async read(sessionId: string, streamId: string, recover = false): Promise<VideoBatch> {
     if (this.closed) throw new Error("Simulator video is closed.");
     let relay = this.relays.get(streamId);
     if (!relay) {
@@ -214,6 +219,7 @@ export class SimulatorVideo {
     if (relay.closed) throw relay.error ?? new Error("Simulator video stream stopped.");
     if (relay.reads.length) throw new Error("A simulator video read is already in progress for this stream.");
     const current = relay;
+    if (recover || (current.frames.length && Date.now() - current.frames[0]!.capturedAtUnixMs > VIDEO_MAX_FRAME_AGE_MS)) this.skipToKeyframe(current);
     this.armRelayIdle(current);
     if (current.waitingForKey) this.requestKeyframe(current.channel);
     return new Promise<VideoBatch>((resolve, reject) => {
@@ -255,7 +261,19 @@ export class SimulatorVideo {
     this.options.keepAlive?.(sessionId);
   }
 
-  private batch(relay: Relay, frames: string[]): VideoBatch {
+  /** Uses the active damage callback, never idle-refresh output, to settle an action. */
+  waitForIdle(sessionId: string, budgetMs = 2000): Promise<boolean> | undefined {
+    const channel = [...this.channels.values()].find(channel => channel.sessionId === sessionId && channel.process?.stdin.writable);
+    if (!channel) return undefined;
+    const id = ++this.settleId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { channel.settles.delete(id); reject(new Error("Simulator settling bridge timed out.")); }, budgetMs + 1000);
+      channel.settles.set(id, { resolve, reject, timer });
+      channel.process!.stdin.write(`s ${id} 150 ${budgetMs}\n`);
+    });
+  }
+
+  private batch(relay: Relay, frames: VideoBatch["frames"]): VideoBatch {
     return { sessionId: relay.sessionId, streamId: relay.streamId, sequence: relay.sequence++, frames, active: true };
   }
 
@@ -263,27 +281,27 @@ export class SimulatorVideo {
     if (!relay.frames.length || !relay.reads.length) return;
     const read = relay.reads.shift()!;
     clearTimeout(read.timer);
-    const frames = relay.frames.map(frame => frame.toString("base64"));
+    const frames = relay.frames.map(frame => ({ id: frame.id, capturedAtUnixMs: frame.capturedAtUnixMs, ageMs: Math.max(0, Date.now() - frame.capturedAtUnixMs), data: frame.data.toString("base64") }));
     relay.frames = [];
     relay.bytes = 0;
     read.resolve(this.batch(relay, frames));
   }
 
-  private deliver(relay: Relay, unit: Buffer, key: boolean) {
+  private deliver(relay: Relay, unit: NativeVideoFrame, key: boolean) {
     if (relay.closed) return;
-    if (unit.length > RELAY_BYTES) {
+    if (unit.data.length > RELAY_BYTES) {
       if (key) this.stopRelay(relay, new Error("Simulator video keyframe exceeds the relay buffer limit."));
       else this.skipToKeyframe(relay);
       return;
     }
-    // A reader that falls half a second behind resumes at a fresh keyframe instead of accumulating latency.
-    if (relay.bytes + unit.length > RELAY_BYTES || relay.frames.length >= RELAY_FRAMES) this.skipToKeyframe(relay);
+    // Byte/count limits bound memory; capture age determines presentation freshness.
+    if (relay.bytes + unit.data.length > RELAY_BYTES || relay.frames.length >= RELAY_FRAMES) this.skipToKeyframe(relay);
     if (relay.waitingForKey) {
       if (!key) return;
       relay.waitingForKey = false;
     }
     relay.frames.push(unit);
-    relay.bytes += unit.length;
+    relay.bytes += unit.data.length;
     this.serve(relay);
   }
 
@@ -345,7 +363,7 @@ export class SimulatorVideo {
     if (!channel) {
       channel = {
         key, format: ticket.format, sessionId: ticket.sessionId, deviceId: ticket.deviceId, maxDimension: ticket.maxDimension,
-        clients: new Set(), waitingForKey: new Set(), relays: new Set(), stderr: "", diagnostics: "",
+        clients: new Set(), waitingForKey: new Set(), relays: new Set(), settles: new Map(), stderr: "", diagnostics: "",
         heartbeat: setInterval(() => {
           if (channel) {
             this.options.keepAlive?.(channel.sessionId);
@@ -370,8 +388,11 @@ export class SimulatorVideo {
     const current = this.channelFor(ticket);
     current.clients.add(client);
     current.waitingForKey.add(client);
-    // Video is receive-only; controls continue through typed MCP tools.
-    client.on("message", () => client.close(1008, "Video connection is receive-only."));
+    // Only dependency recovery is accepted here; input continues through typed MCP tools.
+    client.on("message", (data, binary) => {
+      if (!binary && data.toString() === "keyframe") { current.waitingForKey.add(client); this.requestKeyframe(current); }
+      else client.close(1008, "Video connection accepts only keyframe recovery.");
+    });
     client.on("error", () => client.terminate());
     client.once("close", () => {
       this.releaseClient(current, client);
@@ -388,7 +409,7 @@ export class SimulatorVideo {
   }
 
   private capture(channel: Channel) {
-    const helper = this.options.helper ?? new URL("../plugins/apple-device-hub/dist/simulator-stream", import.meta.url);
+    const helper = this.options.helper ?? new URL("./simulator-stream", import.meta.url);
     const sizing = channel.maxDimension ? ["--max-dimension", String(channel.maxDimension)] : [];
     const process = this.options.launch
       ? this.options.launch(channel.deviceId, channel.format, { maxDimension: channel.maxDimension })
@@ -410,12 +431,17 @@ export class SimulatorVideo {
     process.stdout.on("data", (chunk: Buffer) => {
       if (this.channels.get(channel.key) !== channel) return;
       try {
-        reader.push(chunk, encoded => {
+        reader.push(chunk, native => {
+          const encoded = native.data;
           clearTimeout(channel.startup);
           channel.startup = undefined;
           const frame = inspectVideoAccessUnit(encoded, channel.format);
           const key = frame.keyFrame && frame.hasParameterSets;
-          const unit = key && channel.format === "h264" ? Buffer.from(declareH264DecodeOrder(encoded)) : encoded;
+          const data = key && channel.format === "h264" ? Buffer.from(declareH264DecodeOrder(encoded)) : encoded;
+          const unit = { ...native, data };
+          const envelope = Buffer.alloc(16);
+          envelope.writeBigUInt64BE(BigInt(native.id), 0);
+          envelope.writeBigUInt64BE(BigInt(native.capturedAtUnixMs), 8);
           if (key) channel.keyframeRequestedAt = undefined;
           for (const client of channel.clients) {
             if (client.readyState !== WebSocket.OPEN) continue;
@@ -429,7 +455,7 @@ export class SimulatorVideo {
               if (!key) continue;
               channel.waitingForKey.delete(client);
             }
-            client.send(unit, { binary: true });
+            client.send(Buffer.concat([envelope, data]), { binary: true });
           }
           for (const relay of channel.relays) this.deliver(relay, unit, key);
         });
@@ -444,7 +470,11 @@ export class SimulatorVideo {
 
   private diagnostic(channel: Channel, line: string) {
     try {
-      const event = JSON.parse(line) as { event?: string; available?: unknown; message?: unknown };
+      const event = JSON.parse(line) as { event?: string; available?: unknown; message?: unknown; requestId?: number; quiet?: boolean };
+      if (event.event === "settled" && typeof event.requestId === "number") {
+        const pending = channel.settles.get(event.requestId);
+        if (pending) { clearTimeout(pending.timer); channel.settles.delete(event.requestId); pending.resolve(event.quiet === true); }
+      }
       if (event.event === "input" && typeof event.available === "boolean") {
         channel.input = { available: event.available, ...(typeof event.message === "string" ? { message: event.message } : {}) };
       }
@@ -472,6 +502,8 @@ export class SimulatorVideo {
     clearInterval(channel.heartbeat);
     clearTimeout(channel.startup);
     channel.pacer?.close();
+    for (const pending of channel.settles.values()) { clearTimeout(pending.timer); pending.reject(new Error("Simulator video stopped while settling.")); }
+    channel.settles.clear();
     for (const client of channel.clients) client.close(1000, "Simulator video stopped.");
     for (const relay of channel.relays) this.stopRelay(relay);
     const process = channel.process;

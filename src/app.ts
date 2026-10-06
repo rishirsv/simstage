@@ -1,5 +1,5 @@
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { DeviceHub } from "./components/device-hub.js";
+import { SimStage } from "./components/sim-stage.js";
 
-createRoot(document.getElementById("root")!).render(createElement(DeviceHub));
+createRoot(document.getElementById("root")!).render(createElement(SimStage));

@@ -3,7 +3,7 @@ import { AppleHub } from "./apple.js";
 import { createHubServer } from "./mcp.js";
 
 const hub = new AppleHub();
-const assetRoot = import.meta.url.endsWith("/src/server.ts") ? new URL("../plugins/apple-device-hub/dist/", import.meta.url) : new URL("./", import.meta.url);
+const assetRoot = import.meta.url.endsWith("/src/server.ts") ? new URL("../packages/sim-stage-mcp/dist/", import.meta.url) : new URL("./", import.meta.url);
 let stopping = false;
 async function stop() {
   if (stopping) return;

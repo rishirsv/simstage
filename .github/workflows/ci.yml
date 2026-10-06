@@ -11,31 +11,22 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-26
-            node: 22
-          - runner: macos-26
-            node: 24
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
-      - run: npm test
-      - run: npm run pack
-      - run: npm run verify:packages
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun test
+      - run: bun run pack
+      - run: bun run verify:packages
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: packages-${{ matrix.runner }}-node${{ matrix.node }}
+          name: packages-macos-26-bun1.4.2
           path: |
             release/*.tgz
             release/*.zip

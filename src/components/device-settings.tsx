@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { ArrowUpRight, Moon, Sun } from "lucide-react";
 import { Button } from "./ui/button.js";
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "./ui/field.js";
@@ -15,6 +16,12 @@ const preferences = [
 const textSizeLabel = (value: string) => value.replace(/^accessibility-/, "Accessibility ").replaceAll("-", " ").replace(/^./, letter => letter.toUpperCase());
 
 export function DeviceSettings({ state }: { state: ViewerState }) {
+  const refreshedSession = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!state.session || state.busy || state.ended || refreshedSession.current === state.session.id) return;
+    refreshedSession.current = state.session.id;
+    void changeSettings();
+  }, [state.session?.id, state.busy, state.ended]);
   const disabled = !state.session || state.busy || state.ended;
   return <div className="settings-pane">
     <FieldGroup>
@@ -38,6 +45,7 @@ export function DeviceSettings({ state }: { state: ViewerState }) {
       </Field>)}
     </FieldGroup>
     <div className="settings-footer">
+      <Button variant="ghost" size="sm" disabled={disabled} onClick={() => void changeSettings()}>Refresh settings</Button>
       <p>Changes stay on the device until you change them back.</p>
       <Button id="open-settings" variant="ghost" size="sm" disabled={disabled} onClick={() => void performAction({ type: "openSettings" })}>Open Settings<ArrowUpRight data-icon="inline-end" /></Button>
     </div>

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { AppleHub, SessionExpiredError, appleToolData, resolveSimulatorType, scrollFromPoint, scrollGesture, scrollRegion, appearanceSettings, imageInfo, jpegDimensions, keyboardCommand, logicalDimensions, physicalDevices, pngDimensions, simulatorDevices, type AppleBoundary } from '../src/apple.js';
 import { actionSchema } from '../src/shared.js';
+import { callHubTool } from '../src/mcp.js';
 import { SessionRegistry } from '../src/session-registry.js';
 import { SimulatorVideo, type VideoBatch } from '../src/video.js';
 
@@ -149,11 +150,13 @@ test('sessions hide native secrets and AX disabled captures use screenshot comma
   assert.equal(f.calls.filter((call) => call.name === 'DeviceInteractionSynthesize').length, 1);
   assert.equal(f.commands.filter((args) => args.includes('screenshot')).length, 2);
   assert.equal(JSON.stringify(first).includes(f.screenshotPath), false);
-  assert.equal(first.settings?.appearance, 'light');
+  assert.equal(first.settings, undefined);
+  assert.equal(f.commands.some(args => args.includes('appearance')), false, 'ordinary captures perform no settings discovery');
+  assert.equal((await f.hub.settings(session.id)).settings?.appearance, 'light');
   f.setAppearance({ result: { userInterfaceStyle: 'dark', reduceMotion: { enabled: true } } });
-  assert.deepEqual((await f.hub.capture(session.id)).settings, { appearance: 'dark', reduceMotion: true });
+  assert.deepEqual((await f.hub.settings(session.id)).settings, { appearance: 'dark', reduceMotion: true });
   f.setAppearance(undefined);
-  assert.equal((await f.hub.capture(session.id)).settings, undefined);
+  assert.equal((await f.hub.settings(session.id)).settings, undefined);
   await f.hub.disconnect(session.id);
   assert.equal(f.calls.at(-1)?.name, 'DeviceInteractionEndSession');
   await assert.rejects(f.hub.capture(session.id), (error) => error instanceof SessionExpiredError && error.code === 'SESSION_EXPIRED');
@@ -168,7 +171,7 @@ test('reconnects and different devices use unique native session identifiers', a
   assert.notEqual(first.id, second.id);
   const identifiers = f.calls.filter((call) => call.name === 'DeviceInteractionStartSession').map((call) => call.args.sessionIdentifier);
   assert.equal(new Set(identifiers).size, 3, 'Xcode retains recently used names after EndSession.');
-  assert.ok(identifiers.every((value) => /^Apple Device Hub [0-9A-F]{8}$/.test(String(value))));
+  assert.ok(identifiers.every((value) => /^Sim Stage [0-9A-F]{8}$/.test(String(value))));
 });
 
 test('concurrent connects reuse a single native session and actions serialize', async (t) => {
@@ -264,24 +267,30 @@ test('settings use documented argument contracts for simulator and physical devi
 });
 
 test('idle sessions close and active queued work prevents premature expiry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = await fixture(t, 25);
   const session = await f.hub.connect('sim-1');
-  let started!: () => void;
-  const waiting = new Promise<void>((resolve) => { started = resolve; });
+  let started!: () => void, ended!: () => void;
+  const waiting = new Promise<void>(resolve => { started = resolve; });
+  const ending = new Promise<void>(resolve => { ended = resolve; });
   let release!: () => void;
-  const hold = new Promise<void>((resolve) => { release = resolve; });
-  f.setToolHook(async (_name, args) => {
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  f.setToolHook(async (name, args) => {
     if (args.interactionCommand === 't 100 200') { started(); await hold; }
+    if (name === 'DeviceInteractionEndSession') ended();
     return undefined;
   });
   const capture = f.hub.capture(session.id);
   const tap = f.hub.action(session.id, { type: 'tap', x: 100, y: 200 });
-  await waiting; await capture;
-  await new Promise((resolve) => setTimeout(resolve, 45));
-  assert.equal(f.calls.some((call) => call.name === 'DeviceInteractionEndSession'), false);
-  release(); await tap;
-  await new Promise((resolve) => setTimeout(resolve, 45));
-  assert.equal(f.calls.filter((call) => call.name === 'DeviceInteractionEndSession').length, 1);
+  const work = Promise.all([capture, tap]);
+  await waiting;
+  t.mock.timers.tick(45);
+  assert.equal(f.calls.some(call => call.name === 'DeviceInteractionEndSession'), false);
+  release();
+  await work;
+  t.mock.timers.tick(45);
+  await ending;
+  assert.equal(f.calls.filter(call => call.name === 'DeviceInteractionEndSession').length, 1);
   await assert.rejects(f.hub.capture(session.id), /expired or disconnected/);
 });
 
@@ -292,7 +301,7 @@ test('shutdown closes the bridge even if native EndSession fails', async (t) => 
     ? { isError: true, content: [{ type: 'text', text: 'Xcode disconnected.' }] } : undefined);
   await assert.rejects(f.hub.close(), /Xcode disconnected/);
   assert.equal(f.closed, true);
-  await assert.rejects(f.hub.connect('sim-1'), /Hub is closed/);
+  await assert.rejects(f.hub.connect('sim-1'), /Sim Stage is closed/);
 });
 
 test('image headers report JPEG and PNG dimensions', () => {
@@ -343,20 +352,19 @@ test('actions target elements by ref or label and observe again once the screen 
   const general = capture.elements!.find((element) => element.label === 'General')!;
   assert.equal(general.role, 'Button');
 
-  await f.hub.action(session.id, { type: 'tap', element: { ref: general.ref } });
+  await f.hub.action(session.id, { type: 'tap', element: { ref: general.ref } }, { snapshot: capture.snapshot });
   const commands = f.calls.filter((call) => call.name === 'DeviceInteractionSynthesize').slice(-2).map((call) => call.args.interactionCommand);
   assert.deepEqual(commands, ['t 201 406.3', ''], 'the settled observation follows the tap');
   assert.ok(f.commands.filter((args) => args.includes('--type=jpeg')).length >= 2, 'idle detection compares quick screenshots');
 
   await f.hub.action(session.id, { type: 'tap', element: { label: 'accessibility', role: 'Button' } }, { settle: false });
   assert.equal(f.calls.at(-1)?.args.interactionCommand, 't 201 458.3');
-  await assert.rejects(f.hub.action(session.id, { type: 'tap', element: { ref: 'e999' } }), /No element e999/);
+  await assert.rejects(f.hub.action(session.id, { type: 'tap', element: { ref: 'e999' } }, { snapshot: capture.snapshot }), /No element e999/);
   await assert.rejects(f.hub.action(session.id, { type: 'tap', element: { label: 'Search' } }), /elements match/);
   await assert.rejects(f.hub.action(session.id, { type: 'tap' }), /element target or both x and y/);
 
   await f.hub.action(session.id, { type: 'type', text: 'wifi', element: { role: 'SearchField', label: 'Search' } }, { settle: false });
-  const typed = f.calls.slice(-2).map((call) => call.args.interactionCommand);
-  assert.deepEqual(typed, ['t 201 822', 'sender keyboard kbd \\u{77}\\u{69}\\u{66}\\u{69}']);
+  assert.equal(f.calls.at(-1)?.args.interactionCommand, 't 201 822 sender keyboard kbd \\u{77}\\u{69}\\u{66}\\u{69}');
 
   await f.hub.action(session.id, { type: 'launchApp', bundleId: 'com.apple.mobilesafari' }, { settle: false });
   assert.equal(f.calls.at(-1)?.args.activationBundleId, 'com.apple.mobilesafari');
@@ -487,7 +495,7 @@ test('coordinate typing keeps focus and text input in one serialized operation',
   const waiting = new Promise<void>(resolve => { started = resolve; });
   const hold = new Promise<void>(resolve => { release = resolve; });
   f.setToolHook(async (_name, args) => {
-    if (args.interactionCommand === 't 100 200') { started(); await hold; }
+    if (args.interactionCommand === `t 100 200 ${keyboardCommand('hi')}`) { started(); await hold; }
     return undefined;
   });
   const typed = f.hub.action(session.id, { type: 'type', x: 100, y: 200, text: 'hi' }, { settle: false });
@@ -496,7 +504,7 @@ test('coordinate typing keeps focus and text input in one serialized operation',
   assert.equal(f.calls.some(call => call.args.interactionCommand === 'b h'), false);
   release();
   await Promise.all([typed, home]);
-  assert.deepEqual(f.calls.slice(-3).map(call => call.args.interactionCommand), ['t 100 200', keyboardCommand('hi'), 'b h']);
+  assert.deepEqual(f.calls.slice(-2).map(call => call.args.interactionCommand), [`t 100 200 ${keyboardCommand('hi')}`, 'b h']);
 });
 
 test('simulator-only operations reject physical sessions before capture or input', async (t) => {
@@ -640,7 +648,7 @@ test('shutdown during discovery prevents a new native connection and repeated sh
     return command(args, timeoutMs);
   };
   const connecting = f.hub.connect('sim-1');
-  const rejected = assert.rejects(connecting, /Hub is closed/);
+  const rejected = assert.rejects(connecting, /Sim Stage is closed/);
   await waiting;
   const close = f.hub.close();
   assert.equal(f.hub.close(), close);
@@ -672,6 +680,7 @@ test('shutdown during native connection closes the returned native session witho
 });
 
 test('live stream reads run alongside input and prevent idle expiry while pending', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const video = new SimulatorVideo();
   let release!: (value: VideoBatch) => void;
   const batch = new Promise<VideoBatch>(resolve => { release = resolve; });
@@ -683,7 +692,7 @@ test('live stream reads run alongside input and prevent idle expiry while pendin
   const reading = f.hub.streamRead(session.id, 'live-stream');
   await f.hub.action(session.id, { type: 'pressKey', key: 'Home' }, { settle: false });
   assert.equal(f.calls.at(-1)?.args.interactionCommand, 'b h', 'input does not wait for a live batch');
-  await new Promise(resolve => setTimeout(resolve, 45));
+  t.mock.timers.tick(45);
   assert.equal(f.calls.some(call => call.name === 'DeviceInteractionEndSession'), false);
   const result: VideoBatch = { sessionId: session.id, streamId: 'live-stream', sequence: 0, frames: [], active: true };
   release(result);
@@ -700,10 +709,11 @@ test('device activity reaches each live viewer once and never repeats typed text
   const f = await fixture(t, 60_000, video);
   await writeFile(f.hierarchyPath, settingsHierarchy);
   const session = await f.hub.connect('sim-1');
-  const general = (await f.hub.capture(session.id)).elements!.find(element => element.label === 'General')!;
+  const capture = await f.hub.capture(session.id);
+  const general = capture.elements!.find(element => element.label === 'General')!;
   await f.hub.action(session.id, { type: 'tap', x: 10, y: 20 }, { settle: false });
   const stream = await f.hub.stream(session.id);
-  await f.hub.action(session.id, { type: 'tap', element: { ref: general.ref } }, { settle: false });
+  await f.hub.action(session.id, { type: 'tap', element: { ref: general.ref } }, { snapshot: capture.snapshot, settle: false });
   await f.hub.action(session.id, { type: 'type', text: 'correct horse battery' }, { settle: false });
   const batch = await f.hub.streamRead(session.id, stream.streamId!);
   assert.deepEqual(batch.activity?.map(item => ({ summary: item.summary, ref: item.ref, point: item.point })), [
@@ -784,30 +794,30 @@ const inUse = (key: string) => ({ isError: true, content: [{ type: 'text', text:
 /** Above macOS's process ID limit, so never a live process. */
 const crashedPid = 999_999;
 
-test('a device another Device Hub server holds is joined, and left running for that server', async (t) => {
+test('a device another Sim Stage server holds is joined, and left running for that server', async (t) => {
   const f = await fixture(t);
   const other = new SessionRegistry(join(f.directory, 'registry'), process.ppid);
-  await other.hold({ key: 'Apple Device Hub 0A0B0C0D', deviceId: 'sim-1', deviceName: 'iPhone' }, 'other-session');
-  f.setToolHook(async name => name === 'DeviceInteractionStartSession' ? inUse('Apple Device Hub 0A0B0C0D') : undefined);
+  await other.hold({ key: 'Sim Stage 0A0B0C0D', deviceId: 'sim-1', deviceName: 'iPhone' }, 'other-session');
+  f.setToolHook(async name => name === 'DeviceInteractionStartSession' ? inUse('Sim Stage 0A0B0C0D') : undefined);
   const session = await f.hub.connect('sim-1');
-  assert.equal(session.origin, 'device-hub');
-  assert.equal(f.calls.at(-1)?.args.interactSessionKey, 'Apple Device Hub 0A0B0C0D');
+  assert.equal(session.origin, 'sim-stage');
+  assert.equal(f.calls.at(-1)?.args.interactSessionKey, 'Sim Stage 0A0B0C0D');
   assert.equal(JSON.stringify(session).includes('0A0B0C0D'), false, 'the key stays on the server');
   assert.deepEqual((await f.hub.status()).elsewhere, [{ deviceId: 'sim-1', deviceName: 'iPhone', holders: 1 }]);
   await f.hub.disconnect(session.id);
   assert.equal(f.calls.some(call => call.name === 'DeviceInteractionEndSession'), false);
-  assert.deepEqual((await other.find('Apple Device Hub 0A0B0C0D'))?.holders.map(holder => holder.sessionId), ['other-session']);
+  assert.deepEqual((await other.find('Sim Stage 0A0B0C0D'))?.holders.map(holder => holder.sessionId), ['other-session']);
 });
 
-test('a session left by a crashed Device Hub server is adopted and ended by the last holder', async (t) => {
+test('a session left by a crashed Sim Stage server is adopted and ended by the last holder', async (t) => {
   const f = await fixture(t);
-  await new SessionRegistry(join(f.directory, 'registry'), crashedPid).hold({ key: 'Apple Device Hub DEADBEEF', deviceId: 'sim-1', deviceName: 'iPhone' }, 'gone');
-  f.setToolHook(async name => name === 'DeviceInteractionStartSession' ? inUse('Apple Device Hub DEADBEEF') : undefined);
+  await new SessionRegistry(join(f.directory, 'registry'), crashedPid).hold({ key: 'Sim Stage DEADBEEF', deviceId: 'sim-1', deviceName: 'iPhone' }, 'gone');
+  f.setToolHook(async name => name === 'DeviceInteractionStartSession' ? inUse('Sim Stage DEADBEEF') : undefined);
   const session = await f.hub.connect('sim-1');
-  assert.equal(session.origin, 'device-hub');
+  assert.equal(session.origin, 'sim-stage');
   assert.deepEqual((await f.hub.status()).elsewhere, []);
   await f.hub.disconnect(session.id);
-  assert.deepEqual(f.calls.at(-1), { name: 'DeviceInteractionEndSession', args: { interactionSessionKey: 'Apple Device Hub DEADBEEF' } });
+  assert.deepEqual(f.calls.at(-1), { name: 'DeviceInteractionEndSession', args: { interactionSessionKey: 'Sim Stage DEADBEEF' } });
 });
 
 test("another tool's session is joined only with takeOver and never ended", async (t) => {
@@ -864,7 +874,7 @@ test('simulator types resolve by name to the newest installed runtime, or the re
   assert.throws(() => resolveSimulatorType(runtimesList, 'iPhone 17 Pro', 'iOS 30'), /No installed simulator runtime matches “iOS 30”/);
 });
 
-test('simulators are created and cloned for testing, and only those Device Hub made are deleted', async (t) => {
+test('simulators are created and cloned for testing, and only those Sim Stage made are deleted', async (t) => {
   const f = await fixture(t);
   const created = '6F0C1B2A-0000-4000-8000-000000000001';
   let devices: Record<string, unknown>[] = [simulator];
@@ -877,19 +887,149 @@ test('simulators are created and cloned for testing, and only those Device Hub m
     return undefined;
   });
   const device = await f.hub.createSimulator({ deviceType: 'iPhone 17 Pro' });
-  assert.deepEqual(f.commands.find(args => args[1] === 'create'), ['simctl', 'create', 'iPhone 17 Pro (Device Hub)', 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro', 'com.apple.CoreSimulator.SimRuntime.iOS-27-2']);
+  assert.deepEqual(f.commands.find(args => args[1] === 'create'), ['simctl', 'create', 'iPhone 17 Pro (Sim Stage)', 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro', 'com.apple.CoreSimulator.SimRuntime.iOS-27-2']);
   assert.deepEqual([device.id, device.createdByHub], [created, true]);
-  await assert.rejects(f.hub.deleteSimulator('sim-1'), /iPhone was not created by Device Hub/);
+  await assert.rejects(f.hub.deleteSimulator('sim-1'), /iPhone was not created by Sim Stage/);
   devices = devices.map(item => item.udid === 'sim-1' ? { ...item, state: 'Booted' } : item);
   await assert.rejects(f.hub.createSimulator({ cloneFrom: 'sim-1' }), /iPhone is booted, and Xcode clones only shut-down simulators/);
   const session = await f.hub.connect(created);
   // A viewer in another window followed the agent onto the new simulator.
   const viewer = new SessionRegistry(join(f.directory, 'registry'), process.ppid);
-  await viewer.hold({ key: 'secret-key', deviceId: created, deviceName: 'iPhone 17 Pro (Device Hub)' }, 'viewer-session');
+  await viewer.hold({ key: 'secret-key', deviceId: created, deviceName: 'iPhone 17 Pro (Sim Stage)' }, 'viewer-session');
   await f.hub.deleteSimulator(created);
   assert.ok(f.commands.some(args => args.join(' ') === `simctl delete ${created}`));
   assert.deepEqual(f.calls.filter(call => call.name === 'DeviceInteractionEndSession').map(call => call.args.interactionSessionKey), ['secret-key'], 'its shared session ends once, before deletion');
   assert.equal(await viewer.find('secret-key'), undefined);
   assert.equal((await f.hub.status()).sessions.some(item => item.id === session.id), false);
   assert.equal((await f.hub.status()).devices.some(item => item.id === created), false);
+});
+
+
+test('final native release excludes another server until it can start a fresh usable session', async (t) => {
+  const f = await fixture(t);
+  let key: string | undefined;
+  let entered!: () => void, finish!: () => void;
+  const ending = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  let starts = 0;
+  f.setToolHook(async (name, args) => {
+    if (name === 'DeviceInteractionStartSession') {
+      starts++;
+      if (key) return inUse(key);
+      key = String(args.sessionIdentifier);
+      return { structuredContent: { interactionSessionKey: key } };
+    }
+    if (name === 'DeviceInteractionEndSession') { entered(); await gate; key = undefined; }
+    if (name === 'DeviceInteractionSynthesize' && args.interactSessionKey !== key) {
+      return { isError: true, content: [{ type: 'text', text: 'Session not found.' }] };
+    }
+    return undefined;
+  });
+  const first = await f.hub.connect('sim-1');
+  const other = new AppleHub({ boundary: f.boundary, registry: new SessionRegistry(join(f.directory, 'registry')) });
+  t.after(() => other.close());
+  const disconnecting = f.hub.disconnect(first.id);
+  await ending;
+  const connecting = other.connect('sim-1');
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(starts, 1, 'native join/start waits while the last holder ends its session');
+  finish();
+  await disconnecting;
+  const next = await connecting;
+  assert.equal(next.origin, 'new');
+  assert.equal((await other.capture(next.id, { screenshot: 'never' })).session.id, next.id);
+});
+
+test('missing or corrupt holder bookkeeping cannot authorize ending a known foreign session', async (t) => {
+  for (const corrupt of [false, true]) {
+    const f = await fixture(t);
+    f.setToolHook(async name => name === 'DeviceInteractionStartSession' ? inUse('External Tool') : undefined);
+    const session = await f.hub.connect('sim-1', { takeOver: true });
+    const file = join(f.directory, 'registry', 'sessions.json');
+    if (corrupt) await writeFile(file, 'unreadable JSON');
+    else await rm(file);
+    await f.hub.disconnect(session.id);
+    assert.equal(f.calls.some(call => call.name === 'DeviceInteractionEndSession'), false);
+  }
+});
+
+test('device_action refs use the public snapshot contract and selectors use the current hierarchy', async (t) => {
+  const f = await fixture(t);
+  await writeFile(f.hierarchyPath, settingsHierarchy);
+  const session = await f.hub.connect('sim-1');
+  const ref = session.observation.elements!.find(element => element.label === 'General')!.ref;
+  const before = f.calls.length;
+  assert.equal((await callHubTool(f.hub, 'device_action', { sessionId: session.id, action: { type: 'tap', element: { ref } } })).isError, true);
+  assert.equal(f.calls.length, before);
+  await writeFile(f.hierarchyPath, portrait);
+  assert.equal((await callHubTool(f.hub, 'device_action', { sessionId: session.id, snapshot: session.observation.snapshot, action: { type: 'tap', element: { ref } } })).isError, true);
+  assert.equal((await callHubTool(f.hub, 'simulator_click', { sessionId: session.id, snapshot: session.observation.snapshot, target: ref })).isError, true);
+  assert.equal((await callHubTool(f.hub, 'device_action', { sessionId: session.id, action: { type: 'tap', element: { label: 'General' } } })).isError, true);
+  assert.ok(f.calls.slice(before).every(call => call.args.interactionCommand === ''), 'rejected refs and removed selectors never send input');
+});
+
+test('connections return their initial observation and reused connections observe current orientation', async (t) => {
+  const f = await fixture(t);
+  const first = await f.hub.connect('sim-1');
+  assert.equal(f.calls.filter(call => call.name === 'DeviceInteractionSynthesize').length, 1);
+  assert.deepEqual(first.observation.coordinateSpace, { width: 440, height: 956 });
+  await writeFile(f.hierarchyPath, landscape);
+  await writeFile(f.screenshotPath, png(2868, 1320));
+  const reused = await f.hub.connect('sim-1');
+  assert.equal(reused.id, first.id);
+  assert.equal(reused.origin, 'this-server');
+  assert.deepEqual(reused.observation.coordinateSpace, { width: 956, height: 440 });
+  assert.notEqual(reused.observation.snapshot, first.observation.snapshot);
+});
+
+test('native bridge settling replaces screenshot polling, including continuously animated screens', async (t) => {
+  for (const quiet of [true, false]) {
+    const video = new SimulatorVideo();
+    let waits = 0;
+    video.waitForIdle = () => { waits++; return Promise.resolve(quiet); };
+    const f = await fixture(t, 60_000, video);
+    const session = await f.hub.connect('sim-1');
+    const before = f.calls.length;
+    await f.hub.action(session.id, { type: 'tap', x: 10, y: 20 });
+    assert.equal(waits, 1);
+    assert.equal(f.commands.some(args => args.includes('screenshot') || args.includes('appearance')), false);
+    assert.deepEqual(f.calls.slice(before).map(call => call.args.interactionCommand), ['t 10 20', '']);
+  }
+});
+
+
+test('connecting while the initial observation is pending shares its single result', async (t) => {
+  const f = await fixture(t);
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.setToolHook(async name => {
+    if (name === 'DeviceInteractionSynthesize') { entered(); await gate; }
+    return undefined;
+  });
+  const connecting = f.hub.connect('sim-1');
+  await started;
+  const joining = f.hub.connect('sim-1');
+  release();
+  const [first, second] = await Promise.all([connecting, joining]);
+  assert.equal(second, first);
+  assert.equal(f.calls.filter(call => call.name === 'DeviceInteractionSynthesize').length, 1);
+});
+
+
+test('failed holder persistence cleans up only the session created inside its excluded transition', async (t) => {
+  for (const key of [undefined, 'Sim Stage ABCDEF12', 'External Tool']) {
+    const f = await fixture(t);
+    const failure = join(f.directory, 'registry', 'sessions.json');
+    f.setToolHook(async name => {
+      if (name !== 'DeviceInteractionStartSession') return undefined;
+      // The native start succeeded, but the holder file cannot be published.
+      await mkdir(failure);
+      return key ? inUse(key) : undefined;
+    });
+    await assert.rejects(f.hub.connect('sim-1', { takeOver: true }), /EISDIR|ENOTDIR|directory/i);
+    assert.equal(f.calls.some(call => call.name === 'DeviceInteractionSynthesize'), false);
+    assert.deepEqual(f.calls.filter(call => call.name === 'DeviceInteractionEndSession').map(call => call.args.interactionSessionKey), key ? [] : ['secret-key']);
+    assert.deepEqual((await f.hub.status()).sessions, []);
+  }
 });

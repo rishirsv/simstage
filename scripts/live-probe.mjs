@@ -7,8 +7,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
-const client = new Client({ name: "device-hub-live-validation", version: "1.0.0" });
-const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL("../plugins/apple-device-hub/dist/server.js", import.meta.url))], stderr: "pipe" });
+const client = new Client({ name: "sim-stage-live-validation", version: "1.0.0" });
+const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL("../packages/sim-stage-mcp/dist/server.js", import.meta.url))], stderr: "pipe" });
 transport.stderr?.on("data", data => process.stderr.write(data));
 const directory = new URL("../artifacts/validation/2026-09-30/", import.meta.url);
 await mkdir(directory, { recursive: true });
@@ -51,11 +51,11 @@ try {
           while (performance.now() - start < 5000) {
             const batchResult = await client.callTool({ name: "device_stream_read", arguments: { sessionId: request.sessionId, streamId: stream.streamId } });
             if (batchResult.isError) throw new Error(JSON.stringify(batchResult.content));
-            const batch = batchResult._meta["apple-device-hub/video"];
+            const batch = batchResult._meta["sim-stage/video"];
             batches++;
             for (const frame of batch.frames) {
               firstFrame ??= performance.now() - start;
-              units.push(Buffer.from(frame, "base64"));
+              units.push(Buffer.from(frame.data, "base64"));
             }
           }
           const stats = { name: request.name, codec: stream.format, sessionId: request.sessionId, frames: units.length, bytes: units.reduce((total, unit) => total + unit.length, 0), batches, firstFrameMs: firstFrame, durationMs: performance.now() - start };
@@ -68,7 +68,8 @@ try {
         continue;
       }
       const result = await client.callTool({ name: request.name, arguments: request.arguments ?? {} });
-      if (request.name === "device_connect" && !result.isError) sessions.add(result.structuredContent.id);
+      const state = result._meta?.["sim-stage/data"] ?? result.structuredContent;
+      if (request.name === "device_connect" && !result.isError) sessions.add(state.id);
       if (request.name === "device_disconnect" && !result.isError) sessions.delete(request.arguments.sessionId);
       const image = result.content.find(item => item.type === "image");
       let screenshot;
@@ -76,7 +77,7 @@ try {
         screenshot = fileURLToPath(new URL(`${++sequence}-${request.name}.${image.mimeType === "image/png" ? "png" : "jpg"}`, directory));
         await writeFile(screenshot, Buffer.from(image.data, "base64"));
       }
-      const observation = { name: request.name, isError: result.isError ?? false, state: result.structuredContent, text: result.content.filter(item => item.type === "text").map(item => item.text).join("\n"), ...(screenshot ? { screenshot } : {}) };
+      const observation = { name: request.name, isError: result.isError ?? false, state, text: result.content.filter(item => item.type === "text").map(item => item.text).join("\n"), ...(screenshot ? { screenshot } : {}) };
       await writeFile(new URL(`${sequence}-${request.name}.json`, directory), JSON.stringify(observation, null, 2));
       console.log(JSON.stringify(observation));
     } catch (error) { console.log(JSON.stringify({ error: String(error) })); }

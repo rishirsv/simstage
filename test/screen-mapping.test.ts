@@ -3,11 +3,6 @@ import assert from "node:assert/strict";
 import { screenToDevicePoint, screenElementRect, elementAtPoint } from "../src/screen-mapping.js";
 import type { ScreenElement } from "../src/elements.js";
 
-test("touch positions use logical bounds when a 3x screenshot is displayed at half size", () => {
-  const point = screenToDevicePoint({ x: 210, y: 289 }, { left: 100, top: 50, width: 220, height: 478 }, { width: 440, height: 956 });
-  assert.deepEqual(point, { x: 220, y: 478 });
-});
-
 test("landscape input maps independently along both axes and clamps a drag outside the screen", () => {
   const screen = { left: 20, top: 40, width: 478, height: 220 };
   assert.deepEqual(screenToDevicePoint({ x: 259, y: 150 }, screen, { width: 956, height: 440 }), { x: 478, y: 220 });

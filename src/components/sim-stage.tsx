@@ -26,7 +26,7 @@ function useMedia(query: string) {
   }, () => matches(query));
 }
 
-export function DeviceHub() {
+export function SimStage() {
   const state = useSyncExternalStore(subscribe, getSnapshot);
   const wide = useMedia(WIDE);
   const [query, setQuery] = useState("");

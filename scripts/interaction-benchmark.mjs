@@ -1,6 +1,7 @@
-// Run with node --import tsx scripts/interaction-benchmark.mjs <booted-simulator-UDID> [hevc|h264] [--max-dimension <pixels>].
+// Run with bun scripts/interaction-benchmark.mjs <booted-simulator-UDID> [hevc|h264] [--max-dimension <pixels>].
 // Drives a real HID drag on the Home screen through the helper's input channel and
-// measures the encoded frame rate, bandwidth, and input-to-frame latency.
+// measures encoded output cadence and bandwidth. Next output is a component timing
+// and can be idle refresh; it does not establish a causal visible response.
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { AccessUnitReader } from "../src/video.ts";
@@ -8,15 +9,15 @@ import { inspectVideoAccessUnit } from "../src/video-codec.ts";
 
 const [deviceId, format = "hevc", ...extra] = process.argv.slice(2);
 if (!deviceId) throw new Error("Pass a booted simulator UDID.");
-const helper = fileURLToPath(new URL("../plugins/apple-device-hub/dist/simulator-stream", import.meta.url));
+const helper = fileURLToPath(new URL("../packages/sim-stage-mcp/dist/simulator-stream", import.meta.url));
 const child = spawn(helper, [deviceId, "--codec", format, ...extra], { stdio: ["pipe", "pipe", "pipe"] });
 const frames = [];
 const reader = new AccessUnitReader();
 let stderr = "";
 child.stderr.on("data", data => { stderr += data; });
 child.stdout.on("data", data => reader.push(data, unit => {
-  const info = inspectVideoAccessUnit(unit, format);
-  frames.push({ at: performance.now(), bytes: unit.length, key: info.keyFrame });
+  const info = inspectVideoAccessUnit(unit.data, format);
+  frames.push({ id: unit.id, capturedAtUnixMs: unit.capturedAtUnixMs, captureToOutputMs: Math.max(0, Date.now() - unit.capturedAtUnixMs), at: performance.now(), bytes: unit.data.length, key: info.keyFrame });
 }));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const send = line => child.stdin.write(`${line}\n`);
@@ -56,6 +57,7 @@ const diagnostics = stderr.trim().split("\n").flatMap(line => { try { return [JS
 const seconds = (dragEnd - dragStart) / 1000;
 const bytes = window.reduce((sum, frame) => sum + frame.bytes, 0);
 console.log(JSON.stringify({
+  scope: "native-component", clockBasis: "input/output performance.now on this host",
   format, extra,
   configuration: diagnostics.find(event => event.event === "configuration"),
   input: diagnostics.find(event => event.event === "input"),
@@ -69,7 +71,7 @@ console.log(JSON.stringify({
     megabitsPerSecond: Number((bytes * 8 / seconds / 1e6).toFixed(2)),
     averageFrameKB: Number((bytes / window.length / 1024).toFixed(1)),
   },
-  inputToFrameMs: latencies.map(value => Number(value.toFixed(1))),
+  inputToNextEncodedOutputMs: latencies.map(value => Number(value.toFixed(1))),
   stopped: diagnostics.find(event => event.event === "stopped"),
   errors: diagnostics.filter(event => /error/.test(event.event)),
 }, null, 2));

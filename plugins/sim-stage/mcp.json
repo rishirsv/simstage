@@ -1,12 +1,13 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
-    "apple-device-hub": {
+    "sim-stage": {
       "type": "stdio",
-      "command": "npx",
+      "command": "bun",
       "args": [
-        "--yes",
-        "apple-device-hub-mcp@0.1.3"
+        "x",
+        "--bun",
+        "sim-stage-mcp@0.1.3"
       ]
     }
   }
