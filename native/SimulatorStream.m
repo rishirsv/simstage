@@ -471,7 +471,9 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     if (!hidClient || (!down && !touching)) return NO;
     CGPoint point = [self surfacePointForX:x y:y];
     BOOL delivered = [self sendHID:touchMessage(mouseMessage, point, CGSizeMake(atomic_load(&surfaceWidth), atomic_load(&surfaceHeight)), down)];
-    touching = down;
+    // A rejected or timed-out release may leave a finger held. Keep cleanup
+    // armed until a release is acknowledged; uncertain downs also need cleanup.
+    touching = down || (touching && !delivered);
     touchPoint = point;
     return delivered;
 }
