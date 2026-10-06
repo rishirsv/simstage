@@ -267,7 +267,6 @@ static BOOL observeOnly = NO;
 
 - (void)receiveSurface:(IOSurfaceRef)surface {
     lastDamageAt = mach_absolute_time();
-    if (observeOnly) return;
     if (latestBuffer) { CVPixelBufferRelease(latestBuffer); latestBuffer = nil; }
     if (!surface || stopping) return;
     OSStatus status = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, (__bridge CFDictionaryRef)@{ (id)kCVPixelBufferMetalCompatibilityKey: @YES }, &latestBuffer);
