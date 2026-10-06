@@ -1,5 +1,68 @@
 # Sim Stage performance experiments
 
+All eleven experiments were implemented and measured. Nine optimizations and the
+age-accounting prerequisite have separate ready-for-review PRs. The 60 fps cap
+was rejected because it reduced drawn cadence. No PR has been merged.
+
+## Implementation results, October 6, 2026
+
+| Order | Outcome and measured scope | Report | PR |
+| --- | --- | --- | --- |
+| 0 | Corrected server-wait accounting; controlled false recovery 1 → 0, delayed-response recovery retained. No live median speed claim. | [Video age](performance/video-age.md) | [#8](https://github.com/rishirsv/simstage/pull/8) |
+| 1 | Matched cold builds: module evaluation p75 55.9 → 37.6 ms; JS 1,205,903 → 858,231 bytes. | [SDK imports](performance/sdk-import.md) | [#2](https://github.com/rishirsv/simstage/pull/2) |
+| 2 | Settled helper taps: action p75 1,355.8 → 1,048.6 ms; observations 3 → 2. Bridge-only actions retain their path. | [Input-only taps](performance/input-only-taps.md) | [#3](https://github.com/rishirsv/simstage/pull/3) |
+| 2a | Controlled background collision: action p75 1,141.5 → 988.6 ms; fresh quiet action observations satisfy background refreshes. | [Background captures](performance/background-captures.md) | [#4](https://github.com/rishirsv/simstage/pull/4) |
+| 3 | No-viewer static action p75 2,329.5 → 1,634.2 ms, settling screenshots 2 → 0. Continuous animation correctly times out but sample p75 is 227 ms slower. | [Damage settling](performance/damage-settling.md) | [#7](https://github.com/rishirsv/simstage/pull/7) |
+| 4 | Warm real-image conversion p75 21.47 → 16.54 ms; matching point dimensions. First-use conversion is slower. | [Native screenshots](performance/native-screenshots.md) | [#5](https://github.com/rishirsv/simstage/pull/5) |
+| 5 | Removed 30 physical discovery processes across 30 known-simulator connections; each costs about 70 ms process CPU. Warm connection p75 improvement is only 7.72 ms. | [Simulator discovery](performance/simulator-discovery.md) | [#11](https://github.com/rishirsv/simstage/pull/11) |
+| 6 | Matched real-frame replay: browser base64 CPU falls 84–90%, browser inspection 46–61%. Savings are fractions of a millisecond per frame. | [Byte decoding](performance/video-byte-decoding.md) | [#6](https://github.com/rishirsv/simstage/pull/6) |
+| 7 | Sustained shrink: bytes/sec falls 18.6%, mean encode time 25.1%. One sustained restart, no rebound restart; small text is slightly softer at 1× scale. | [Stream shrink](performance/stream-shrink.md) | [#10](https://github.com/rishirsv/simstage/pull/10) |
+| 8 | Native portrait HEVC NV12: capture-to-output 12.08 → 9.55 ms; helper CPU falls 23.4%, bytes do not increase. Rotation, scaling, H.264 retain BGRA. | [Native NV12](performance/native-nv12.md) | [#9](https://github.com/rishirsv/simstage/pull/9) |
+| 9 | Rejected 60 fps cap: drawn cadence 57.98 → 52.07 fps; mean sample p95 draw gap 22.87 → 33.57 ms. Retain 120 fps. | Cadence evidence below | None |
+
+The component and action gains must not be added together. Alternating action
+experiments retain at least 30 samples per variant; animation behavior uses five
+samples per variant. Native and resize components use repeated alternating runs,
+with their smaller sample counts stated in each report.
+
+### Capture-cap and buffer decisions
+
+Three alternating cap pairs used genuine continuous CADisplayLink animation in
+the real HTTP preview, requesting up to 120 fps. The 120 fps cap emitted a mean
+249 frames per 3.5-second window; 60 emitted 182.7. Lowering the cap reduced
+bytes/sec (90,344 → 78,767) but worsened capture-to-output age (5.06 → 5.71 ms)
+and drawn cadence. These are Chrome rendering opportunities, not physical
+scanout. The configured cap was not treated as measured source cadence.
+
+The direct-buffer and owned-copy prototypes were retained as experiments,
+without a PR. The real BGRA surface carries Display P3; an identity copy fails
+its color-space guard. Timings from that fallback path cannot establish a
+copy-path improvement. NV12 preserves the required color conversion and earns
+the native optimization PR through total-path and CPU measurements, with
+matched color/frame identity and real-image comparisons.
+
+### Cohort and integration validation
+
+The lab used macOS 27.0 (26A428), Xcode 27.0 (27A266a), iOS 27.0,
+iPhone 18 Pro simulator, Bun 1.4.2, Chrome 154.0.8037.98, and package 0.1.3.
+Original baseline source is `7edcbb6`; each PR names its independent source
+change. The local `codex/perf-experiments` branch combines all accepted changes,
+including the action-path conflict resolutions, for integration validation.
+
+Typecheck, native/browser/server build, all 157 tests, packing, isolated package
+smoke tests, signed arm64 helper verification, and gallery archive verification
+pass together. GitHub Actions are disabled in this repository; the PRs have no
+remote check runs. No external telemetry backend or field dashboard was added.
+The viewer exposes bounded local phase/age/recovery aggregates through
+`window.__SIM_STAGE_VIDEO_DIAGNOSTICS__()`.
+
+Raw samples, prototypes, benchmark programs, images, and logs remain in ignored
+`artifacts/performance`. They are local reproducibility artifacts, not committed
+or uploaded device inventories. The original investigation and proposed field
+monitoring below remain historical evidence and follow-up work.
+
+## Original investigation, October 5, 2026
+
 Start with measurement accuracy, SDK bundle deduplication, and observation work on
 the action path. These offer the best combination of user impact and bounded
 implementation effort. No production optimizations have been applied in this
