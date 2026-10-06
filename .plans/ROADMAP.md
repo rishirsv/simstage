@@ -1,4 +1,4 @@
-# Apple Device Hub roadmap
+# SimStage roadmap
 
 Status: private staging, 2026-10-06. Read [audit](../docs/audit/READINESS.md) and
 [migration boundary](../docs/audit/MIGRATION.md) for evidence and scope.

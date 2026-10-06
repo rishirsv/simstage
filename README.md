@@ -1,4 +1,7 @@
-# Apple Device Hub
+# SimStage
+
+SimStage is the private working repository for this Apple Device Hub-derived project.
+Upstream attribution and existing package, plugin, and runtime identifiers are retained.
 
 > Private migration staging. This branch is not a public release. Existing publisher
 > attribution and `UNLICENSED` status are preserved. See the
