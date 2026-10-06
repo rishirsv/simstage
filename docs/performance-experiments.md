@@ -49,7 +49,7 @@ Original baseline source is `7edcbb6`; each PR names its independent source
 change. The local `codex/perf-experiments` branch combines all accepted changes,
 including the action-path conflict resolutions, for integration validation.
 
-Typecheck, native/browser/server build, all 157 tests, packing, isolated package
+Typecheck, native/browser/server build, all 158 tests, packing, isolated package
 smoke tests, signed arm64 helper verification, and gallery archive verification
 pass together. GitHub Actions are disabled in this repository; the PRs have no
 remote check runs. No external telemetry backend or field dashboard was added.
@@ -79,9 +79,11 @@ Real combined tap, double-tap, and hold checks advance markers by 1, 2, and 1,
 use only fresh target validation plus the final observation, and reuse the
 result for a background capture without another synthesis.
 
-Built combined assets have SHA-256 hashes:
+The 30-sample journey build and final build have SHA-256 hashes:
 
-- JS: `e46ee457e89ed020f370d553d4b82f00130da1c5fd8f1e24a73597ff8de01192`.
+- Measured journey JS: `e46ee457e89ed020f370d553d4b82f00130da1c5fd8f1e24a73597ff8de01192`.
+- Final JS after the tested reset-attribution correction:
+  `6cd7eea60558656dda0cbee2864e4f7776567541301561b1e132c41a5af942ae`.
 - Native helper: `6e747219bdc8a43e71d9cccfc4246f469a1910e26fff3f3c9d34d9224495ed74`.
 
 Raw samples, prototypes, benchmark programs, images, and logs remain in ignored
