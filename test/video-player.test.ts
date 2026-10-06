@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { deliveryBoundMs } from "../src/video-metrics.js";
 import { getEventListeners } from "node:events";
 import { coordinateSpaceMatchesFrame, SimulatorVideoPlayer, type SimulatorVideoFrame } from "../src/video-player.js";
 
@@ -478,4 +479,28 @@ test("decoded bursts retain the latest frame identity through a rendering opport
     assert.ok(milestones.filter(event => ["draw", "present"].includes(event.phase)).every(event => event.id === lastId));
     player.stop();
   });
+});
+
+
+test("relay age correction avoids a false recovery while retaining delayed-response recovery", async () => {
+  for (const [elapsed, wait, serverAge, corrected, recoveries] of [
+    [270, 250, 10, true, 0],
+    [280, 250, 260, false, 1],
+    [280, 250, 260, true, 0],
+    [800, 250, 10, true, 1],
+  ] as const) await fakeBrowser(async browser => {
+    const events: string[] = [], reads: Array<(frames: SimulatorVideoFrame[]) => void> = [];
+    const player = new SimulatorVideoPlayer(browser.canvas, { sessionId: "session", url: "unused", codec: "avc1.42E01F", fps: 60 }, () => {}, error => assert.fail(error.message), {
+      read: () => new Promise(resolve => reads.push(resolve)), stop() {},
+    }, event => events.push(event.phase));
+    player.start();
+    reads.shift()!([envelope(keyframe, serverAge + (corrected ? deliveryBoundMs(elapsed, wait) : elapsed))]);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(events.filter(phase => phase === "received").length, 1);
+    assert.equal(events.filter(phase => phase === "stale-drop").length, recoveries);
+    assert.equal(events.filter(phase => phase === "keyframe-request").length, recoveries);
+    assert.equal(browser.decoder().chunks.length, recoveries ? 0 : 1);
+    player.stop();
+    reads.shift()?.([]);
+  }, { now: () => 0 });
 });
