@@ -36,3 +36,17 @@ test("H.264 keyframes declare decode order so hardware decoders release each fra
     assert.equal(declareH264DecodeOrder(input), input);
   }
 });
+
+test("byte-search Annex B inspection handles short, adjacent and truncated prefixes inside views", () => {
+  const empty = { keyFrame: false, hasPicture: false, hasParameterSets: false, codec: undefined };
+  for (const data of [[], [0], [0, 0], [0, 0, 1], [0, 0, 0, 1], [0, 0, 3, 1, 0x65]]) {
+    assert.deepEqual(inspectVideoAccessUnit(Uint8Array.from(data)), empty);
+  }
+  for (const data of [[0, 0, 1, 0x65], [0, 0, 0, 1, 0x65], [0, 0, 0, 0, 1, 0x65], [0, 0, 1, 0, 0, 1, 0x65]]) {
+    assert.deepEqual(inspectVideoAccessUnit(Uint8Array.from(data)), { ...empty, keyFrame: true, hasPicture: true });
+  }
+  assert.deepEqual(inspectVideoAccessUnit(Uint8Array.from([0, 0, 1, 0x26]), "hevc"), empty);
+  const backing = Uint8Array.from([0x65, 0, 0, 1, 0x65, 0x65]);
+  assert.deepEqual(inspectVideoAccessUnit(backing.subarray(1, 5)), { ...empty, keyFrame: true, hasPicture: true });
+  assert.deepEqual(inspectVideoAccessUnit(Uint8Array.from([0, 0, 1, 0x67, 0x42, 0x00])), empty);
+});
