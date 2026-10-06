@@ -154,7 +154,9 @@ try {
           const target = window.benchmark.receive ? window : document.querySelector("iframe")?.contentWindow;
           // MCP RPC in the host frame hands its envelope to the viewer's clock.
           const receiver = result._meta?.["sim-stage/video"] ? (document.querySelector("iframe")?.contentWindow ?? target) : target;
-          receiver?.benchmark?.receive(result._meta?.["sim-stage/video"]?.frames, end - start);
+          const batch = result._meta?.["sim-stage/video"], elapsed = end - start;
+          const delivery = typeof batch?.waitMs === "number" && Number.isFinite(batch.waitMs) && batch.waitMs >= 0 && batch.waitMs <= elapsed ? elapsed - batch.waitMs : elapsed;
+          receiver?.benchmark?.receive(batch?.frames, delivery);
           window.benchmark.rpc.push({ name: JSON.parse(args[1].body).name, start, end, bytes: new TextEncoder().encode(text).length });
         }
         return response;
