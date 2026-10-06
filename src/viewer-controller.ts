@@ -56,6 +56,8 @@ let videoObservationPending = false;
 let videoObservationTimer: ReturnType<typeof setTimeout> | undefined;
 let videoDimensions: { width: number; height: number } | undefined;
 let videoRequestedDimension: number | undefined;
+let videoResizeTimer: ReturnType<typeof setTimeout> | undefined;
+let videoResizeTarget: number | undefined;
 let videoSizeFloor: number | undefined;
 let coordinateRefreshPending = false;
 let lastCoordinateRefresh = 0;
@@ -195,6 +197,8 @@ function videoStatus(message: string, error = false) {
 
 function stopVideo(reset = false) {
   videoGeneration++;
+  if (videoResizeTimer !== undefined) clearTimeout(videoResizeTimer);
+  videoResizeTimer = videoResizeTarget = undefined;
   videoPlayer?.stop();
   videoPlayer = undefined;
   videoSessionId = undefined;
@@ -311,12 +315,34 @@ function videoTransport(stream: SimulatorStream): SimulatorVideoTransport {
  * The still sits under the canvas at the same size. Before the first still,
  * assume portrait, whose long edge is the frame's maximum height.
  */
-function videoMaxDimension() {
+function videoMaxDimension(ignoreFloor = false) {
   const shown = screen.getBoundingClientRect();
   const stage = screenFrame.parentElement;
   const edge = Math.max(shown.width, shown.height) || parseFloat(getComputedStyle(videoCanvas).maxHeight) || Math.max(stage?.clientWidth ?? 0, stage?.clientHeight ?? 0);
-  const pixels = Math.max(edge * (window.devicePixelRatio || 1), videoSizeFloor ?? 0);
+  const pixels = Math.max(edge * (window.devicePixelRatio || 1), ignoreFloor ? 0 : videoSizeFloor ?? 0);
   return pixels >= 320 ? Math.min(8192, Math.ceil(pixels / 64) * 64) : undefined;
+}
+
+/** Shrink only after a sustained 25% reduction; held touches finish first. */
+function resizeVideo() {
+  const needed = videoMaxDimension(true);
+  if (!videoPlayer || videoRequestedDimension === undefined || needed === undefined || needed > videoRequestedDimension * 0.75) {
+    if (videoResizeTimer !== undefined) clearTimeout(videoResizeTimer);
+    videoResizeTimer = videoResizeTarget = undefined;
+    return;
+  }
+  if (videoResizeTimer !== undefined && videoResizeTarget === needed) return;
+  if (videoResizeTimer !== undefined) clearTimeout(videoResizeTimer);
+  videoResizeTarget = needed;
+  const generation = videoGeneration;
+  videoResizeTimer = setTimeout(() => {
+    videoResizeTimer = undefined;
+    if (generation !== videoGeneration || videoMaxDimension(true) !== needed) { resizeVideo(); return; }
+    if (liveTouch || pointerStart) { resizeVideo(); return; }
+    videoSizeFloor = needed;
+    stopVideo();
+    schedulePoll();
+  }, 500);
 }
 
 /** The size a resized panel or a rotation to landscape needs once it outgrows the stream; the native resolution is the limit. */
@@ -1055,6 +1081,12 @@ export function initializeViewer(nodes: { root: HTMLElement; screen: HTMLImageEl
   extensions = new OpenAIExtensions(app);
   const active = () => attached === attachment && !ended;
   bindScreen();
+  if (typeof ResizeObserver !== "undefined") {
+    const resize = new ResizeObserver(() => { if (active()) resizeVideo(); });
+    resize.observe(screenFrame);
+    resize.observe(root);
+    removers.push(() => resize.disconnect());
+  }
   observer = new IntersectionObserver(entries => { if (active()) { visible = entries.some(entry => entry.isIntersecting); schedulePoll(); } });
   observer.observe(root);
   listen(window, "pagehide", endView);
