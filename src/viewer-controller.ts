@@ -268,10 +268,12 @@ function receiveActivity(sessionId: string, items: unknown[]) {
 }
 
 function decodeBase64(value: string) {
+  const bytes = Uint8Array as Uint8ArrayConstructor & { fromBase64?: (value: string) => Uint8Array };
+  if (typeof bytes.fromBase64 === "function") return bytes.fromBase64(value);
   const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  return bytes;
+  const output = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) output[index] = binary.charCodeAt(index);
+  return output;
 }
 
 /**

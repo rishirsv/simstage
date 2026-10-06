@@ -29,7 +29,7 @@ export function inspectVideoAccessUnit(data: Uint8Array, format: VideoCodec = "h
   let keyFrame = false, hasPicture = false, hasSps = false, hasPps = false, hasVps = false;
   let codec: string | undefined;
   const starts: Array<{ prefix: number; payload: number }> = [];
-  for (let index = 0; index < data.length - 3; index++) {
+  for (let index = data.indexOf(0); index >= 0 && index < data.length - 3; index = data.indexOf(0, index + 1)) {
     if (data[index] !== 0 || data[index + 1] !== 0) continue;
     const length = data[index + 2] === 1 ? 3 : data[index + 2] === 0 && data[index + 3] === 1 ? 4 : 0;
     if (!length || index + length >= data.length) continue;
