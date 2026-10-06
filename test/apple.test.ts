@@ -1033,3 +1033,53 @@ test('failed holder persistence cleans up only the session created inside its ex
     assert.deepEqual((await f.hub.status()).sessions, []);
   }
 });
+
+test('background refresh reuses only a fresh quiet action observation and keeps explicit captures fresh', async t => {
+  const video = new SimulatorVideo();
+  let quiet = true;
+  video.waitForIdle = () => Promise.resolve(quiet);
+  video.input = () => {};
+  const f = await fixture(t, 60_000, video);
+  const session = await f.hub.connect('sim-1');
+  let now = 100;
+  t.mock.method(performance, 'now', () => now);
+  const action = () => f.hub.action(session.id, { type: 'tap', x: 10, y: 20 }, { resolution: 'full' });
+  const final = await action();
+  const before = f.calls.length;
+  const reused = await f.hub.capture(session.id, { background: true, resolution: 'full' });
+  assert.equal(f.calls.length, before);
+  assert.equal(reused.capturedAt, final.capturedAt, 'reuse preserves observation time');
+  assert.deepEqual(reused.elements, final.elements);
+  await f.hub.capture(session.id, { resolution: 'full' });
+  assert.equal(f.calls.length, before + 1);
+  await f.hub.capture(session.id, { background: true });
+  assert.equal(f.calls.length, before + 2, 'explicit observation invalidates reuse');
+  await action();
+  const expired = f.calls.length;
+  now += 1001;
+  await f.hub.capture(session.id, { background: true });
+  assert.equal(f.calls.length, expired + 1);
+  quiet = false;
+  await action();
+  const animated = f.calls.length;
+  await f.hub.capture(session.id, { background: true });
+  assert.equal(f.calls.length, animated + 1, 'a timed out animation cannot seed the cache');
+  quiet = true;
+  await action();
+  await f.hub.input(session.id, [{ type: 'home', dt: 0 }]);
+  const changed = f.calls.length;
+  await f.hub.capture(session.id, { background: true });
+  assert.equal(f.calls.length, changed + 1, 'viewer input invalidates reuse');
+  let interrupt = true;
+  f.setToolHook(async (name, args) => {
+    if (interrupt && name === 'DeviceInteractionSynthesize' && args.interactionCommand === '') {
+      interrupt = false;
+      await f.hub.input(session.id, [{ type: 'home', dt: 0 }]);
+    }
+    return undefined;
+  });
+  await action();
+  const raced = f.calls.length;
+  await f.hub.capture(session.id, { background: true });
+  assert.equal(f.calls.length, raced + 1, 'input during the final observation prevents reuse');
+});

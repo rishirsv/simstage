@@ -295,6 +295,8 @@ interface NativeSession {
   closing: boolean;
   pending: number;
   activity: DeviceActivity[];
+  inputGeneration: number;
+  actionObservation?: { at: number; observation: NativeObservation };
 }
 
 const orientationNames = { portrait: 'portrait', landscapeLeft: 'landscape left', landscapeRight: 'landscape right', portraitUpsideDown: 'upside down' } as const;
@@ -310,6 +312,8 @@ export interface CaptureOptions {
   /** Computer-use observations can request AX without changing the viewer preference. */
   updateAccessibilityPreference?: boolean;
   simulatorOnly?: boolean;
+  /** Viewer refreshes may reuse an action observation no older than one second. */
+  background?: boolean;
 }
 export interface ActionOptions extends CaptureOptions {
   settle?: boolean;
@@ -434,7 +438,9 @@ export class AppleHub {
 
   /** Live viewer input bypasses the serial device queue, so it never waits behind an observation. */
   async input(sessionId: string, events: LiveInput[]): Promise<void> {
-    this.videoSession(sessionId);
+    const session = this.videoSession(sessionId);
+    session.inputGeneration++;
+    session.actionObservation = undefined;
     this.video.input(sessionId, events);
   }
 
@@ -541,7 +547,7 @@ export class AppleHub {
       }
       const session: NativeSession = {
         public: { id: sessionId, device: { ...device, state: device.kind === 'simulator' ? 'Booted' : device.state }, accessibilityEnabled: true },
-        key, origin, queue: Promise.resolve(), closing: false, pending: 0, activity: [],
+        key, origin, queue: Promise.resolve(), closing: false, pending: 0, activity: [], inputGeneration: 0,
       };
       try {
         await this.registry.hold({ key, deviceId: device.id, deviceName: device.name, ...(origin === 'other-tool' ? { foreign: true } : {}) }, sessionId);
@@ -690,7 +696,9 @@ export class AppleHub {
     return this.serial(sessionId, async (session) => {
       this.requireSimulator(session, options);
       const enabled = options.accessibilityEnabled ?? session.public.accessibilityEnabled;
-      const capture = enabled ? await this.nativeCapture(session) : await this.screenCapture(session);
+      const recent = options.background && session.actionObservation;
+      const capture = recent && performance.now() - recent.at <= 1000
+        ? recent.observation : enabled ? await this.nativeCapture(session) : await this.screenCapture(session);
       if (options.updateAccessibilityPreference ?? true) session.public.accessibilityEnabled = enabled;
       return this.captureResult(session, capture, enabled, options);
     });
@@ -720,7 +728,7 @@ export class AppleHub {
     // A screen with almost no elements (games, canvases, web content, boot) needs the image to be understood.
     const includeImage = screenshot === 'always' || (screenshot === 'auto' && (elements?.length ?? 0) < 3);
     return {
-      session: this.publicSession(session), capturedAt: new Date().toISOString(),
+      session: this.publicSession(session), capturedAt: observation.capturedAt ?? new Date().toISOString(),
       ...(includeImage ? { screenshot: await (async () => {
         const image = resolution === 'points' ? await this.pointImage(session, observation.image) : observation.image;
         return { ...imageInfo(image), data: image.toString('base64') };
@@ -735,6 +743,8 @@ export class AppleHub {
   }
 
   private async nativeCapture(session: NativeSession, args: Record<string, unknown> = {}, timeoutMs?: number): Promise<NativeObservation> {
+    session.actionObservation = undefined;
+    const inputGeneration = session.inputGeneration;
     let failure = new Error('Xcode accessibility hierarchy is temporarily unavailable; the device may still be starting. Observe again in a few seconds.');
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt) await new Promise(resolve => setTimeout(resolve, 300));
@@ -768,7 +778,7 @@ export class AppleHub {
       }
       session.deviceOrientation = hierarchy.match(/^Device orientation: (.+)$/m)?.[1];
       this.recordSnapshot(session, hierarchy);
-      return { image, hierarchy, applicationState: data.applicationState };
+      return { image, hierarchy, applicationState: data.applicationState, inputGeneration, capturedAt: new Date().toISOString() };
     }
     throw failure;
   }
@@ -815,6 +825,7 @@ export class AppleHub {
   }
 
   private async screenCapture(session: NativeSession): Promise<NativeObservation> {
+    session.actionObservation = undefined;
     const directory = await mkdtemp(join(tmpdir(), 'apple-device-capture-'));
     try {
       const destination = join(directory, 'screenshot.png');
@@ -968,13 +979,14 @@ export class AppleHub {
         case 'openSettings': note('Open Settings'); observation = await synthesize('', 'com.apple.Preferences'); break;
         case 'launchApp': note(`Open ${action.bundleId}`); observation = await synthesize('', action.bundleId); break;
       }
+      let quiet = false;
       // Xcode observes immediately after the event, often mid-transition. Observe again once the screen is still.
       if (options.settle ?? true) {
         const settling = session.public.device.kind === 'simulator' ? this.video.waitForIdle(sessionId) : undefined;
-        if (settling === undefined) await this.waitForIdle(session);
-        else await settling;
+        quiet = await (settling === undefined ? this.waitForIdle(session) : settling);
         observation = await synthesize('');
       }
+      if (quiet && observation.inputGeneration === session.inputGeneration) session.actionObservation = { at: performance.now(), observation };
       return this.captureResult(session, observation, options.accessibilityEnabled ?? session.public.accessibilityEnabled, options);
     });
   }
@@ -1054,6 +1066,8 @@ export class AppleHub {
 }
 
 interface NativeObservation {
+  capturedAt?: string;
+  inputGeneration?: number;
   image: Buffer;
   hierarchy?: string;
   applicationState?: string;

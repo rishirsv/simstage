@@ -48,6 +48,7 @@ let videoFailures = 0;
 let h264Fallback = false;
 let lastVideoError = "";
 let videoRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let videoObservationPending = false;
 let videoObservationTimer: ReturnType<typeof setTimeout> | undefined;
 let videoDimensions: { width: number; height: number } | undefined;
 let videoRequestedDimension: number | undefined;
@@ -209,6 +210,7 @@ function stopVideo(reset = false) {
   if (videoRetryTimer !== undefined) clearTimeout(videoRetryTimer);
   if (videoObservationTimer !== undefined) clearTimeout(videoObservationTimer);
   videoRetryTimer = videoObservationTimer = undefined;
+  videoObservationPending = false;
   if (reset) {
     videoFailures = 0;
     lastVideoError = "";
@@ -224,11 +226,16 @@ function scheduleVideoObservation(delay = 5000) {
   if (!canStreamVideo() || !videoPlayer || !session?.accessibilityEnabled) return;
   videoObservationTimer = setTimeout(() => {
     videoObservationTimer = undefined;
-    if (busy || pointerStart || liveTouch || settingsOpen) { scheduleVideoObservation(); return; }
-    const epoch = lifecycle;
-    void captureCurrent(epoch).catch(error => {
+    if (busy || pointerStart || liveTouch || settingsOpen || videoObservationPending) { scheduleVideoObservation(); return; }
+    const epoch = lifecycle, generation = videoGeneration;
+    videoObservationPending = true;
+    void captureCurrent(epoch, undefined, true).catch(error => {
       if (epoch === lifecycle && !ended) showNotice(errorMessage(error), true);
-    }).finally(() => { if (epoch === lifecycle && !ended) scheduleVideoObservation(); });
+    }).finally(() => {
+      if (generation !== videoGeneration) return;
+      videoObservationPending = false;
+      if (epoch === lifecycle && !ended) scheduleVideoObservation();
+    });
   }, delay);
 }
 
@@ -655,11 +662,11 @@ function applyCapture(result: ToolResult, epoch = lifecycle) {
   updateControls();
 }
 
-async function captureCurrent(epoch = lifecycle, accessibilityEnabled?: boolean) {
+async function captureCurrent(epoch = lifecycle, accessibilityEnabled?: boolean, background = false) {
   const current = session;
   const generation = frameGeneration;
   if (!current || epoch !== lifecycle || ended) return;
-  const result = await callTool("device_capture", { sessionId: current.id, resolution: "full", screenshot: "always", ...(accessibilityEnabled === undefined ? {} : { accessibilityEnabled }) });
+  const result = await callTool("device_capture", { sessionId: current.id, resolution: "full", screenshot: "always", ...(background ? { background: true } : {}), ...(accessibilityEnabled === undefined ? {} : { accessibilityEnabled }) });
   if (generation !== frameGeneration) return;
   applyCapture(result, epoch);
 }
