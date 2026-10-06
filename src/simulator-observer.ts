@@ -5,6 +5,7 @@ interface Observer {
   process: ChildProcess;
   ready: Promise<void>;
   attached: boolean;
+  closing?: Promise<void>;
   waits: Map<number, { resolve: (quiet: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>;
 }
 
@@ -61,13 +62,22 @@ export class SimulatorObserver {
     });
   }
 
-  closeSession(sessionId: string) {
-    const child = this.observers.get(sessionId)?.process;
-    if (!child) return;
-    child.kill("SIGTERM");
-    const forced = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 1000);
-    forced.unref();
-    child.once("close", () => clearTimeout(forced));
+  async restart(sessionId: string, deviceId: string) {
+    await this.closeSession(sessionId);
+    await this.start(sessionId, deviceId);
   }
-  close() { for (const id of this.observers.keys()) this.closeSession(id); }
+
+  closeSession(sessionId: string): Promise<void> {
+    const observer = this.observers.get(sessionId);
+    if (!observer) return Promise.resolve();
+    if (observer.closing) return observer.closing;
+    const child = observer.process;
+    return observer.closing = new Promise(resolve => {
+      const forced = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 1000);
+      forced.unref();
+      child.once("close", () => { clearTimeout(forced); resolve(); });
+      child.kill("SIGTERM");
+    });
+  }
+  async close() { await Promise.all([...this.observers.keys()].map(id => this.closeSession(id))); }
 }

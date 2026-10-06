@@ -290,6 +290,8 @@ interface NativeSession {
   readonly origin: Exclude<SessionOrigin, 'this-server'>;
   coordinateSpace?: { width: number; height: number };
   deviceOrientation?: string;
+  applicationPid?: string;
+  observerPid?: string;
   snapshot?: { id: number; key: string; bundleId?: string; elements: ScreenElement[] };
   queue: Promise<unknown>;
   timer?: ReturnType<typeof setTimeout>;
@@ -774,6 +776,7 @@ export class AppleHub {
         }
       }
       session.deviceOrientation = hierarchy.match(/^Device orientation: (.+)$/m)?.[1];
+      session.applicationPid = hierarchy.match(/^Application, pid:\s*(\d+)/m)?.[1];
       this.recordSnapshot(session, hierarchy);
       return { image, hierarchy, applicationState: data.applicationState };
     }
@@ -884,7 +887,10 @@ export class AppleHub {
       this.requireSimulator(session, options);
       if ((options.settle ?? true) && session.public.device.kind === 'simulator' && !this.video.hasCapture(sessionId)) {
         // If attachment is unavailable, preserve screenshot settling before any input.
-        await this.observer?.start(sessionId, session.public.device.id).catch(() => {});
+        const start = session.observerPid !== session.applicationPid
+          ? this.observer?.restart(sessionId, session.public.device.id) : this.observer?.start(sessionId, session.public.device.id);
+        await start?.catch(() => {});
+        session.observerPid = session.applicationPid;
       }
       const target = 'element' in action ? action.element : undefined;
       if (target?.ref && options.snapshot === undefined) throw new Error('Element refs require the snapshot from the current observation. Observe again before acting.');
@@ -979,6 +985,11 @@ export class AppleHub {
         case 'openSettings': note('Open Settings'); observation = await synthesize('', 'com.apple.Preferences'); break;
         case 'launchApp': note(`Open ${action.bundleId}`); observation = await synthesize('', action.bundleId); break;
       }
+      if ((options.settle ?? true) && this.observer && !this.video.hasCapture(sessionId) && (session.observerPid !== session.applicationPid || action.type === 'launchApp' || action.type === 'openSettings')) {
+        // Relaunching an app can invalidate its surface subscription.
+        await this.observer.restart(sessionId, session.public.device.id).catch(() => {});
+        session.observerPid = session.applicationPid;
+      }
       // Xcode observes immediately after the event, often mid-transition. Observe again once the screen is still.
       if (options.settle ?? true) {
         const settling = session.public.device.kind === 'simulator' ? this.video.waitForIdle(sessionId) ?? this.observer?.waitForIdle(sessionId) : undefined;
@@ -1034,7 +1045,7 @@ export class AppleHub {
     session.closing = true;
     clearTimeout(session.timer);
     this.video.closeSession(sessionId);
-    this.observer?.closeSession(sessionId);
+    await this.observer?.closeSession(sessionId);
     for (const [streamId, cursor] of this.activityCursors) if (cursor.sessionId === sessionId) this.activityCursors.delete(streamId);
     const ending = session.queue.then(async () => {
       try {
@@ -1054,7 +1065,7 @@ export class AppleHub {
     if (this.closing) return this.closing;
     this.closed = true;
     this.closing = (async () => {
-      this.observer?.close();
+      await this.observer?.close();
       await this.video.close();
       await Promise.allSettled([...this.connecting.values()]);
       const results = await Promise.allSettled([...this.sessions.keys()].map((id) => this.disconnect(id)));
