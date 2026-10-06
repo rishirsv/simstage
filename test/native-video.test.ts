@@ -31,6 +31,12 @@ test("native output honors CoreMedia framing and keeps concurrent output records
   ]);
   assert.equal(compilation.code, 0, compilation.stderr);
 
+  await t.test("native point-image conversion preserves dimensions and rejects unreadable input", async () => {
+    const result = await run(executable, ["image-conversion", "4"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.length, 0);
+  });
+
   await t.test("damage settling finishes quietly and bounds a continuously animated screen", async () => {
     for (const [mode, quiet] of [["settle-quiet", true], ["settle-animated", false]] as const) {
       const result = await run(executable, [mode, "4"]);
