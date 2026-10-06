@@ -563,8 +563,30 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     free(capture);
 }
 
+
+static int convertImage(NSString *input, NSString *output, NSInteger maxEdge) {
+  CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:input], NULL);
+  if (!source) return 1;
+  NSDictionary *options = @{(id)kCGImageSourceCreateThumbnailFromImageAlways:@YES, (id)kCGImageSourceThumbnailMaxPixelSize:@(maxEdge), (id)kCGImageSourceCreateThumbnailWithTransform:@YES};
+  CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+  CFRelease(source);
+  if (!image) return 1;
+  CGImageDestinationRef destination = CGImageDestinationCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:output], CFSTR("public.jpeg"), 1, NULL);
+  if (!destination) { CGImageRelease(image); return 1; }
+  CGImageDestinationAddImage(destination, image, (__bridge CFDictionaryRef)@{(id)kCGImageDestinationLossyCompressionQuality:@0.65});
+  bool success = CGImageDestinationFinalize(destination);
+  CFRelease(destination); CGImageRelease(image);
+  return success ? 0 : 1;
+
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
+        if (argc == 5 && !strcmp(argv[1], "--convert-image")) {
+            NSInteger maxEdge = [@(argv[4]) integerValue];
+            if (maxEdge < 1 || maxEdge > 8192) return 2;
+            return convertImage(@(argv[2]), @(argv[3]), maxEdge);
+        }
         if (argc < 2) { fprintf(stderr, "Usage: simulator-stream <UDID> [--codec hevc|h264] [--developer-dir <path>] [--max-dimension <pixels>] [--max-fps <rate>]\n"); return 2; }
         NSString *udid = @(argv[1]);
         NSString *developer = developerDirectory();

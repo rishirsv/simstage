@@ -4,6 +4,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -46,7 +47,8 @@ export class NativeAppleBoundary implements AppleBoundary {
   }
 
   async compress(input: string, output: string, maxEdge: number): Promise<void> {
-    await execFileAsync('/usr/bin/sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '65', '-Z', String(maxEdge), input, '--out', output], { timeout: 10_000 });
+    const helper = new URL(import.meta.url.endsWith('/src/apple.ts') ? '../packages/sim-stage-mcp/dist/simulator-stream' : './simulator-stream', import.meta.url);
+    await execFileAsync(fileURLToPath(helper), ['--convert-image', input, output, String(maxEdge)], { timeout: 10_000 });
   }
 
   private async connect(): Promise<Client> {
