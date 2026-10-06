@@ -1034,7 +1034,7 @@ export class AppleHub {
       // Xcode observes immediately after the event, often mid-transition. Observe again once the screen is still.
       if (options.settle ?? true) {
         const settling = session.public.device.kind === 'simulator' ? this.video.waitForIdle(sessionId) ?? this.observer?.waitForIdle(sessionId) : undefined;
-        quiet = await (settling === undefined ? this.waitForIdle(session) : settling);
+        quiet = await (settling === undefined ? this.waitForIdle(session) : settling.catch(() => this.waitForIdle(session)));
         observation = await synthesize('');
       }
       if (quiet && observation!.inputGeneration === session.inputGeneration) session.actionObservation = { at: performance.now(), observation: observation! };

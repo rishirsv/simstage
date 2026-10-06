@@ -1177,3 +1177,18 @@ test('concurrent status calls share in-flight discovery and later calls discover
   assert.equal(f.commands.filter(args => args[0] === 'devicectl').length, 2);
 
 });
+
+for (const failure of ['helper exited', 'observer error', 'settling timeout']) test(`observer ${failure} falls back after input without replaying it`, async t => {
+  const f = await fixture(t);
+  Reflect.set(f.hub, 'observer', {
+    start: async () => {}, restart: async () => {},
+    waitForIdle: () => Promise.reject(new Error(failure)),
+    closeSession: () => {}, close: () => {},
+  });
+  const session = await f.hub.connect('sim-1');
+  const before = f.calls.length;
+  const result = await f.hub.action(session.id, { type: 'tap', x: 10, y: 20 });
+  assert.ok(result.snapshot);
+  assert.equal(f.commands.filter(args => args.includes('screenshot')).length, 2);
+  assert.deepEqual(f.calls.slice(before).map(call => call.args.interactionCommand), ['t 10 20', '']);
+});
