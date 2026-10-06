@@ -35,7 +35,7 @@ try {
     const { tools } = await client.listTools();
     assert.equal(tools.length, 22);
     const entrypoints = tools.flatMap(tool => tool._meta?.["openai/ui"]?.entrypoints ?? []).map(entry => entry.type);
-    assert.deepEqual([...new Set(entrypoints)].sort(), ["global", "settings", "thread"]);
+    assert.deepEqual([...new Set(entrypoints)].sort(), ["settings", "thread"]);
     const resource = await client.readResource({ uri: "ui://apple-device-hub/viewer" });
     assert.equal(resource.contents[0].mimeType, "text/html;profile=mcp-app");
     assert.ok(resource.contents[0].text.length > 100_000, "Viewer assets must be bundled in HTML");

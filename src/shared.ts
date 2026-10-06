@@ -84,7 +84,7 @@ export interface Capture {
   focus?: DeviceFocus;
 }
 
-export type CaptureState = Omit<Capture, "screenshot" | "elements"> & {
+export type CaptureState = Omit<Capture, "screenshot"> & {
   screenshot?: Omit<Screenshot, "data">;
 };
 

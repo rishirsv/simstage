@@ -3,6 +3,7 @@ import { version } from "./version.js";
 import { applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps/app-with-deps";
 import { OpenAIExtensions, OPENAI_MODEL_CONTEXT_KEY } from "@openai/mcp-extensions/app";
 import { DATA_META_KEY, HIERARCHY_META_KEY, sessionSchema, type CaptureState, type DeviceAction, type DeviceActivity, type DeviceFocus, type DeviceSettings, type HubState, type LiveInput, type Session } from "./shared.js";
+import { formatElement } from "./elements.js";
 import { screenToDevicePoint } from "./screen-mapping.js";
 import { coordinateSpaceMatchesFrame, SimulatorVideoPlayer, type SimulatorStream, type SimulatorVideoTransport } from "./video-player.js";
 import { preferredVideoCodec, type VideoCodec } from "./video-codec.js";
@@ -622,18 +623,19 @@ function applyCapture(result: ToolResult, epoch = lifecycle) {
   updateControls();
 }
 
-async function captureCurrent(epoch = lifecycle, accessibilityEnabled?: boolean) {
+async function captureCurrent(epoch = lifecycle, accessibilityEnabled?: boolean, updateAccessibilityPreference?: boolean) {
   const current = session;
   const generation = frameGeneration;
-  if (!current || epoch !== lifecycle || ended) return;
-  const result = await callTool("device_capture", { sessionId: current.id, resolution: "full", screenshot: "always", ...(accessibilityEnabled === undefined ? {} : { accessibilityEnabled }) });
-  if (generation !== frameGeneration) return;
+  if (!current || epoch !== lifecycle || ended) return false;
+  const result = await callTool("device_capture", { sessionId: current.id, resolution: "full", screenshot: "always", ...(accessibilityEnabled === undefined ? {} : { accessibilityEnabled }), ...(updateAccessibilityPreference === undefined ? {} : { updateAccessibilityPreference }) });
+  if (generation !== frameGeneration || epoch !== lifecycle || session?.id !== current.id || ended) return false;
   applyCapture(result, epoch);
+  return true;
 }
 
 async function refreshCapture() {
   if (!session) return;
-  await run(() => captureCurrent(), "Refreshing screen…");
+  await run(async () => { await captureCurrent(); }, "Refreshing screen…");
 }
 
 async function refreshLive() {
@@ -775,17 +777,26 @@ export async function attachScreen() {
   if (!session || !capture || !screenImage || !contextEnabled) return;
   const epoch = lifecycle;
   await run(async () => {
-    // The decoded canvas is newer than the last observation; attachments need a fresh still.
-    if (session?.device.kind === "simulator") await captureCurrent(epoch);
+    // Capture image and accessibility context together without changing the viewer preference.
+    if (!await captureCurrent(epoch, true, false)) return;
     if (epoch !== lifecycle || !capture || !screenImage || ended) return;
     const currentCapture = capture;
     const currentImage = screenImage;
+    const elements = currentCapture.elements ?? [];
+    const description = [
+      `${currentCapture.session.device.name} (${currentCapture.session.device.kind}) captured ${currentCapture.capturedAt}.`,
+      `App: ${currentCapture.bundleId ?? "unknown"}. Snapshot: ${currentCapture.snapshot ?? "unavailable"}.`,
+      `Coordinate space: ${currentCapture.coordinateSpace.width} × ${currentCapture.coordinateSpace.height} pt. Screenshot: ${currentCapture.screenshot!.width} × ${currentCapture.screenshot!.height} px; scale image positions to logical points before tapping.`,
+      `Elements (${elements.length}):`,
+      ...elements.map(formatElement),
+      currentCapture.hierarchy ? `Accessibility hierarchy:\n${currentCapture.hierarchy}` : "Accessibility hierarchy unavailable for this screen.",
+    ].join("\n");
     const payload: Parameters<App["updateModelContext"]>[0] = {
       content: [
-        { type: "text", text: `${currentCapture.session.device.name} (${currentCapture.session.device.kind}) captured ${currentCapture.capturedAt}. Coordinate space: ${currentCapture.coordinateSpace.width} × ${currentCapture.coordinateSpace.height}.${currentCapture.hierarchy ? `\n\nAccessibility hierarchy:\n${currentCapture.hierarchy}` : ""}` },
+        { type: "text", text: description },
         currentImage,
       ],
-      structuredContent: { sessionId: currentCapture.session.id, deviceId: currentCapture.session.device.id, capturedAt: currentCapture.capturedAt, coordinateSpace: currentCapture.coordinateSpace },
+      structuredContent: { sessionId: currentCapture.session.id, deviceId: currentCapture.session.device.id, capturedAt: currentCapture.capturedAt, bundleId: currentCapture.bundleId, snapshot: currentCapture.snapshot, coordinateSpace: currentCapture.coordinateSpace, screenshot: currentCapture.screenshot, elements, hierarchy: currentCapture.hierarchy },
     };
     const modelContext = extensions.modelContext;
     let attached = false;
@@ -878,7 +889,7 @@ export function retryVideo() { stopVideo(); videoFailures = 0; h264Fallback = fa
 
 export async function setAccessibility(requested: boolean) {
   const epoch = lifecycle;
-  await run(() => captureCurrent(epoch, requested), requested ? "Reading accessibility tree…" : "Disabling accessibility tree…");
+  await run(async () => { await captureCurrent(epoch, requested); }, requested ? "Reading accessibility tree…" : "Disabling accessibility tree…");
 }
 
 export function setInspectorMode(value: boolean, onPick?: typeof pickElement) {

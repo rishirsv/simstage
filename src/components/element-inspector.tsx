@@ -1,7 +1,7 @@
 import { Crosshair, LoaderCircle, MousePointer2, RefreshCw, Search, Workflow } from "lucide-react";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./ui/empty.js";
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "./ui/empty.js";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "./ui/input-group.js";
 import { Toggle } from "./ui/toggle.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip.js";
@@ -24,10 +24,10 @@ export function ElementInspector({ state, elements, selected, query, inspecting,
       <Tooltip><TooltipTrigger asChild><Toggle id="inspect" size="sm" pressed={inspecting} disabled={disabled || !enabled || !mappingReady} onPressedChange={onInspect} aria-label="Pick an element on the screen"><Crosshair /></Toggle></TooltipTrigger><TooltipContent>Pick an element on the screen</TooltipContent></Tooltip>
       <Tooltip><TooltipTrigger asChild><Button id="capture" variant="ghost" size="icon-sm" disabled={disabled} onClick={() => void refreshCapture()} aria-label="Read the screen again"><RefreshCw /></Button></TooltipTrigger><TooltipContent>Read the screen again</TooltipContent></Tooltip>
     </div>
-    {enabled && <InputGroup className="pane-search"><InputGroupAddon><Search /></InputGroupAddon><InputGroupInput id="tree-search" type="search" placeholder="Filter by ref, label, role or value" aria-label="Filter elements" disabled={!state.session} value={query} onChange={event => onQuery(event.target.value)} /></InputGroup>}
+    {enabled && <InputGroup className="pane-search"><InputGroupAddon><Search /></InputGroupAddon><InputGroupInput id="tree-search" type="search" placeholder="Search elements…" aria-label="Filter elements" disabled={!state.session} value={query} onChange={event => onQuery(event.target.value)} /></InputGroup>}
     <div className="element-list" aria-label="Screen elements">
       {!enabled || !filtered.length ? <Empty className="pane-empty">
-        <EmptyHeader><EmptyMedia variant="icon">{reading ? <LoaderCircle className="animate-spin" /> : <Workflow />}</EmptyMedia><EmptyTitle>{reading ? "Reading the screen…" : !enabled ? "See what the agent sees" : filter ? "No matching elements" : "No elements on this screen"}</EmptyTitle><EmptyDescription>{reading ? "Elements appear with the first observation." : !enabled ? "Read accessibility elements to list the labels and refs the agent acts on." : filter ? "Try a ref, label, role or value." : "Read the screen again after it changes."}</EmptyDescription></EmptyHeader>
+        <EmptyHeader><EmptyMedia variant="icon">{reading ? <LoaderCircle className="animate-spin" /> : <Workflow />}</EmptyMedia><EmptyTitle>{reading ? "Reading the screen…" : !enabled ? "Read screen elements" : filter ? "No matching elements" : "No elements on this screen"}</EmptyTitle></EmptyHeader>
         {!enabled && <Button variant="outline" size="sm" disabled={disabled} onClick={() => void setAccessibility(true)}>Read elements</Button>}
       </Empty> : filtered.map(item => <button type="button" key={item.ref} className="element-row" data-element-ref={item.ref} aria-pressed={selected?.ref === item.ref} disabled={!mappingReady || state.ended} onClick={() => onSelect(item)} onMouseEnter={() => onHover(item)} onMouseLeave={() => onHover(undefined)} onFocus={() => onHover(item)} onBlur={() => onHover(undefined)}>
         <span className="ref-badge">{item.ref}</span>
@@ -46,6 +46,6 @@ export function ElementInspector({ state, elements, selected, query, inspecting,
         <dt>Tap point</dt><dd>{selected.point.x}, {selected.point.y}</dd>
       </dl>
     </div>}
-    {enabled && <p className="pane-footer">The agent reads this list instead of a screenshot when it can. <Button id="accessibility" variant="link" size="xs" className="pane-footer-action" disabled={disabled} onClick={() => void setAccessibility(false)}>Send screenshots only</Button></p>}
+    {enabled && <p className="pane-footer"><Button id="accessibility" variant="link" size="xs" className="pane-footer-action" disabled={disabled} onClick={() => void setAccessibility(false)}>Hide elements</Button></p>}
   </div>;
 }

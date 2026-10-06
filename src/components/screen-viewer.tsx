@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { House, ImagePlus, Keyboard, ListTree, LoaderCircle, LockKeyhole, RotateCw, ScanEye, Send, SlidersHorizontal, X } from "lucide-react";
 import { Button } from "./ui/button.js";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "./ui/input-group.js";
@@ -7,6 +7,8 @@ import { DeviceChooser, deviceForm } from "./device-picker.js";
 import { attachScreen, initializeViewer, performAction, retryVideo, rotateDevice, type ViewerState } from "../viewer-controller.js";
 import { elementAtPoint, screenElementRect } from "../screen-mapping.js";
 import type { ScreenElement } from "../elements.js";
+import { ScreenToolbar } from "./screen-toolbar.js";
+import { fitScreenScale } from "../screen-zoom.js";
 import type { DeviceActivity } from "../shared.js";
 
 export type Panel = "elements" | "appearance";
@@ -25,8 +27,8 @@ function ActivityMark({ activity, bounds }: { activity: DeviceActivity; bounds: 
 }
 
 // The decoder owns image/canvas pixels; React owns the overlays.
-const ScreenSurface = memo(function ScreenSurface({ state, elements, highlight, agentView, inspecting, mappingReady, onHover }: {
-  state: ViewerState; elements: ScreenElement[]; highlight?: ScreenElement; agentView: boolean; inspecting: boolean; mappingReady: boolean; onHover: (element?: ScreenElement) => void;
+const ScreenSurface = memo(function ScreenSurface({ state, elements, highlight, agentView, inspecting, mappingReady, size, onHover }: {
+  state: ViewerState; elements: ScreenElement[]; highlight?: ScreenElement; agentView: boolean; inspecting: boolean; mappingReady: boolean; size?: { width: number; height: number }; onHover: (element?: ScreenElement) => void;
 }) {
   const screen = useRef<HTMLImageElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -43,7 +45,7 @@ const ScreenSurface = memo(function ScreenSurface({ state, elements, highlight, 
     const area = event.currentTarget.getBoundingClientRect();
     onHover(elementAtPoint(elements, { x: (event.clientX - area.left) / area.width * bounds.width, y: (event.clientY - area.top) / area.height * bounds.height }));
   };
-  return <div id="screen-frame" className="screen-frame" data-form={deviceForm(state.session?.device)} data-orientation={shape && shape.width > shape.height ? "landscape" : "portrait"} data-inspecting={inspecting} data-busy={state.busy && !state.liveInput} ref={frame} hidden onPointerMove={hover} onPointerLeave={() => { if (agentView) onHover(undefined); }}>
+  return <div id="screen-frame" className="screen-frame" style={size ? { "--screen-width": `${size.width}px`, "--screen-height": `${size.height}px` } as CSSProperties : undefined} data-form={deviceForm(state.session?.device)} data-orientation={shape && shape.width > shape.height ? "landscape" : "portrait"} data-inspecting={inspecting} data-busy={state.busy && !state.liveInput} ref={frame} hidden onPointerMove={hover} onPointerLeave={() => { if (agentView) onHover(undefined); }}>
     <img id="screen" ref={screen} alt="Connected Apple device screen" draggable={false} />
     <canvas id="screen-video" ref={canvas} aria-label="Live device screen" hidden />
     {agentView && bounds && mappingReady && <div className="agent-view" aria-hidden="true">
@@ -120,11 +122,38 @@ export function ScreenViewer({ state, elements, highlight, hovered, agentView, i
 }) {
   const connected = Boolean(state.session);
   const showScreen = Boolean(state.capture || state.videoReady);
+  const viewport = useRef<HTMLDivElement>(null);
+  const [area, setArea] = useState({ width: 0, height: 0 });
+  const [zoom, setZoom] = useState<number | "fit">("fit");
+  useEffect(() => { setZoom("fit"); }, [state.session?.id]);
+  useEffect(() => {
+    const node = viewport.current!;
+    const observer = new ResizeObserver(entries => {
+      // Border-box includes stage padding, which fitScreenScale reserves.
+      const box = entries[0].borderBoxSize[0];
+      setArea({ width: box.inlineSize, height: box.blockSize });
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  const bounds = state.capture?.coordinateSpace;
+  const pixels = state.videoDimensions ?? bounds;
+  const rotated = bounds && pixels && (bounds.width > bounds.height) !== (pixels.width > pixels.height);
+  const logical = bounds ? (rotated ? { width: bounds.height, height: bounds.width } : bounds) : pixels;
+  const scale = zoom === "fit" ? logical ? fitScreenScale(area, logical) : 1 : zoom;
+  const size = logical ? { width: logical.width * scale, height: logical.height * scale } : undefined;
+  function changeZoom(value: number | "fit") {
+    setZoom(value);
+    viewport.current?.scrollTo({ left: 0, top: 0 });
+  }
   return <section className="viewer" aria-label="Device screen">
-    <div className="stage" id="viewport" data-mode={connected ? "device" : "choose"}>
+    <div className="stage" id="viewport" ref={viewport} data-mode={connected ? "device" : "choose"}>
       {!connected && <DeviceChooser state={state} />}
       {connected && !showScreen && <div className="screen-placeholder" data-form={deviceForm(state.session?.device)} aria-label={state.notice}><LoaderCircle className="animate-spin" aria-hidden="true" /><span>{state.notice}</span></div>}
-      <ScreenSurface state={state} elements={elements} highlight={highlight} agentView={agentView} inspecting={inspecting} mappingReady={mappingReady} onHover={onHover} />
+      <div className="screen-stack">
+      <ScreenSurface size={size} state={state} elements={elements} highlight={highlight} agentView={agentView} inspecting={inspecting} mappingReady={mappingReady} onHover={onHover} />
+      {connected && showScreen && <ScreenToolbar state={state} scale={scale} fit={zoom === "fit"} onZoom={changeZoom} />}
+      </div>
       {connected && <StageNotice state={state} hovered={agentView ? hovered : undefined} />}
       {state.activity && connected && <p key={state.activity.id} className="activity-caption" role="status">{state.activity.ref && <span className="ref-badge">{state.activity.ref}</span>}{state.activity.summary}</p>}
     </div>

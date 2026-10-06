@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { App } from "@modelcontextprotocol/ext-apps";
+import { captureResult } from "../src/mcp.js";
 import type { CaptureState, Session } from "../src/shared.js";
 
 class ViewerNode extends EventTarget {
@@ -84,6 +85,8 @@ for (const mode of ["websocket", "relay-preview", "relay-host", "hevc-capture-fa
   const stops: string[] = [];
   const attachments: unknown[] = [];
   const calls: string[] = [];
+  const captureRequests: Record<string, unknown>[] = [];
+  let attachmentCaptureFails = false;
   let timerId = 0;
   let frameNumber = 0;
   let streamNumber = 0;
@@ -103,7 +106,20 @@ for (const mode of ["websocket", "relay-preview", "relay-host", "hevc-capture-fa
     if (name === "device_stream") { requestedCodecs.push(args.codec as string); return new Promise(resolve => { streams.push(resolve); }); }
     if (name === "device_stream_read") return new Promise(resolve => { reads.push({ streamId: args.streamId as string, resolve }); });
     if (name === "device_stream_stop") { stops.push(args.streamId as string); return { content: [], structuredContent: { stopped: true } }; }
-    if (name === "device_capture") return captured("initial-still");
+    if (name === "device_capture") {
+      captureRequests.push(args);
+      if (args.updateAccessibilityPreference === false) {
+        if (attachmentCaptureFails) throw new Error("Screen capture failed.");
+        return captureResult({
+          session: current, capturedAt: "2026-10-05T01:00:00.000Z", bundleId: "com.rishi.steady", snapshot: 42,
+          coordinateSpace: { width: 440, height: 956 },
+          screenshot: { mimeType: "image/png", data: "fresh-attachment-still", width: 1320, height: 2868 },
+          hierarchy: "Button, {{16, 100}, {80, 44}}, label: 'Review'",
+          elements: [{ ref: "e1", role: "Button", label: "Review", selected: true, frame: { x: 16, y: 100, width: 80, height: 44 }, point: { x: 56, y: 122 } }],
+        });
+      }
+      return captured("initial-still");
+    }
     if (name === "device_action") return captured("action-still");
     if (name === "device_frame") return captured(`fallback-${++frameNumber}`);
     throw new Error(`Unexpected tool ${name}`);
@@ -228,6 +244,25 @@ for (const mode of ["websocket", "relay-preview", "relay-host", "hevc-capture-fa
       assert.equal(viewer.getSnapshot().contextEnabled, true);
       await viewer.attachScreen();
       assert.equal(attachments.length, 1, "standard model context remains supported without experimental extensions");
+      assert.deepEqual(captureRequests.at(-1), { sessionId: current.id, resolution: "full", screenshot: "always", accessibilityEnabled: true, updateAccessibilityPreference: false });
+      assert.equal(viewer.getSnapshot().session?.accessibilityEnabled, false, "attaching context preserves the hidden accessibility preference");
+      const payload = attachments[0] as Parameters<App["updateModelContext"]>[0];
+      assert.equal(payload.content?.[1]?.type, "image");
+      assert.equal((payload.content?.[1] as { data: string }).data, "fresh-attachment-still", "the attachment uses a fresh still rather than video or the previous screenshot");
+      assert.match((payload.content?.[0] as { text: string }).text, /\[e1\] Button "Review" selected @ 56,122/);
+      assert.match((payload.content?.[0] as { text: string }).text, /Accessibility hierarchy:\nButton/);
+      assert.equal(payload.structuredContent?.bundleId, "com.rishi.steady");
+      assert.equal(payload.structuredContent?.snapshot, 42);
+      assert.equal(payload.structuredContent?.capturedAt, "2026-10-05T01:00:00.000Z");
+      assert.deepEqual(payload.structuredContent?.coordinateSpace, { width: 440, height: 956 });
+      assert.deepEqual(payload.structuredContent?.screenshot, { mimeType: "image/png", width: 1320, height: 2868 });
+      assert.deepEqual(payload.structuredContent?.elements, viewer.getSnapshot().capture?.elements);
+      assert.equal(payload.structuredContent?.hierarchy, viewer.getSnapshot().capture?.hierarchy);
+      attachmentCaptureFails = true;
+      await viewer.attachScreen();
+      assert.equal(attachments.length, 1, "a failed fresh capture must not attach old context");
+      assert.match(viewer.getSnapshot().notice, /Screen capture failed/);
+      attachmentCaptureFails = false;
     }
     if (relay) await deliverBatch("another-session");
     else await failStream();

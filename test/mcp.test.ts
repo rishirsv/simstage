@@ -42,6 +42,17 @@ test("capture gives the model text and one image, and the viewer its state in _m
   assert.deepEqual(state.coordinateSpace, { width: 390, height: 844 });
 });
 
+test("one-off context captures preserve the accessibility preference and carry target elements to the viewer", async () => {
+  const { hub, calls } = fakeHub();
+  await callHubTool(hub, "device_capture", { sessionId: session.id, accessibilityEnabled: true, updateAccessibilityPreference: false, screenshot: "always" });
+  assert.deepEqual(calls, [["capture", session.id, { accessibilityEnabled: true, updateAccessibilityPreference: false, screenshot: "always" }]]);
+  const elements = [{ ref: "e1", role: "Button", label: "Review", frame: { x: 0, y: 0, width: 80, height: 44 }, point: { x: 40, y: 22 } }];
+  const result = captureResult({ ...frame(), elements, snapshot: 42 });
+  assert.deepEqual((result._meta?.[DATA_META_KEY] as Record<string, unknown>).elements, elements);
+  assert.equal((result._meta?.[DATA_META_KEY] as Record<string, unknown>).snapshot, 42);
+  assert.equal(result.structuredContent, undefined, "agent captures retain model-visible text and image");
+});
+
 test("video requests validate and route HEVC while older requests retain H.264", async () => {
   const { hub, calls } = fakeHub();
   assert.equal((await callHubTool(hub, "device_stream", { sessionId: session.id, codec: "hevc" })).structuredContent?.format, "hevc");
@@ -75,7 +86,7 @@ test("model text lists elements while the raw hierarchy travels only in _meta fo
   assert.equal(text.includes("Window {{"), false);
   const state = result._meta?.[DATA_META_KEY] as Record<string, unknown>;
   assert.equal(state.hierarchy, undefined);
-  assert.equal(JSON.stringify(state).includes("General"), false);
+  assert.deepEqual(state.elements, capture.elements);
   assert.equal(result._meta?.[HIERARCHY_META_KEY], capture.hierarchy);
   assert.match((captureResult(frame()).content[0] as { text: string }).text, /scale positions/);
   assert.match((captureResult({ ...capture, settings: { appearance: "dark", textSize: "large", reduceMotion: false } }).content[0] as { text: string }).text, /Settings: appearance dark, textSize large, reduceMotion false\./);
@@ -231,6 +242,9 @@ test("MCP discovery advertises native host entrypoints and opening accepts empty
     const { tools } = await client.listTools();
     const opening = tools.find(tool => tool.name === "open_device_hub")!;
     assert.deepEqual((opening._meta?.["openai/ui"] as Record<string, unknown>).entrypoints, [{ type: "global" }, { type: "thread" }]);
+    assert.equal(opening.title, "Simulator");
+    assert.equal(client.getServerVersion()?.icons?.[0].mimeType, "image/svg+xml");
+    assert.match(client.getServerVersion()?.icons?.[0].src ?? "", /^data:image\/svg\+xml,/);
     assert.equal((opening._meta?.ui as Record<string, unknown>).resourceUri, UI_URI);
     assert.equal(tools.some(tool => tool.name.startsWith("DeviceInteraction")), false);
     const streaming = tools.find(tool => tool.name === "device_frame")!;
@@ -249,6 +263,7 @@ test("MCP discovery advertises native host entrypoints and opening accepts empty
     assert.equal(tools.find(tool => tool.name === "device_stream_stop")!.annotations?.readOnlyHint, false);
     const resource = await client.readResource({ uri: UI_URI });
     assert.deepEqual(resource.contents[0]._meta?.ui, { prefersBorder: false });
+    assert.deepEqual(resource.contents[0]._meta?.["openai/ui"], { availableDisplayModes: ["fullscreen"], preferredDisplayMode: "fullscreen" });
     assert.deepEqual((tools.find(tool => tool.name === "device_capture")!._meta?.ui as Record<string, unknown>).visibility, ["app", "model"]);
     for (const name of ["simulator_get_state", "simulator_screenshot", "simulator_click", "simulator_drag", "simulator_scroll", "simulator_type_text", "simulator_press_key"]) {
       const tool = tools.find(tool => tool.name === name)!;

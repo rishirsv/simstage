@@ -51,6 +51,13 @@ Results are text-first. With the default `screenshot: "auto"`, the element list 
 
 If the elements don't explain what you expected to find, take one screenshot rather than guessing.
 
+The viewer's **Attach screen to your next message** button captures a fresh screenshot,
+accessibility hierarchy, target elements, app identity, snapshot and coordinate sizes
+as one context attachment. It includes accessibility context even when the viewer's
+accessibility display is off, without changing that preference. Element refs describe
+that captured snapshot; observe again before acting if the screen has changed.
+A saved PNG contains only the image; use Attach screen to pass context into chat.
+
 ## Settings
 
 `device_settings` changes `appearance` (light or dark), `textSize`, `reduceMotion`, `reduceTransparency` and `increasedContrast`. Changes persist on the device. Note the original values from a capture's `settings` first, and restore them when you are done.

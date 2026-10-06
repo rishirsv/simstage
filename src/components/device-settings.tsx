@@ -38,7 +38,7 @@ export function DeviceSettings({ state }: { state: ViewerState }) {
       </Field>)}
     </FieldGroup>
     <div className="settings-footer">
-      <p>Changes stay on the device until you change them back.</p>
+      <p>Saved on the device</p>
       <Button id="open-settings" variant="ghost" size="sm" disabled={disabled} onClick={() => void performAction({ type: "openSettings" })}>Open Settings<ArrowUpRight data-icon="inline-end" /></Button>
     </div>
   </div>;

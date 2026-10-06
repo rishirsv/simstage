@@ -31,7 +31,7 @@ function compareSimulators(left: Device, right: Device) {
 
 function DeviceRow({ device, state }: { device: Device; state: ViewerState }) {
   const connecting = state.busy && state.selectedDeviceId === device.id;
-  const status = !device.available ? "Unavailable" : running(device) ? "Running" : device.kind === "simulator" ? "Starts when connected" : "Not connected";
+  const status = !device.available ? "Unavailable" : running(device) ? "Running" : device.kind === "simulator" ? "Shut down" : "Not connected";
   return <li>
     <button type="button" className="device-row" data-running={running(device)} disabled={!device.available || state.busy || !state.initialized} aria-busy={connecting} onClick={() => void connectDevice(device.id)}>
       <span className="device-row-icon" aria-hidden="true"><DeviceIcon device={device} /></span>
@@ -66,6 +66,5 @@ export function DeviceChooser({ state }: { state: ViewerState }) {
       {physical.length > 0 && <section className="device-group" aria-labelledby="physical-heading"><h2 id="physical-heading">Physical devices</h2><ul className="device-list">{physical.map(device => <DeviceRow key={device.id} device={device} state={state} />)}</ul></section>}
       {!devices.length && <p className="chooser-empty">No simulators or devices found. Install a simulator runtime in Xcode, or connect and unlock a paired device, then refresh.</p>}
     </>}
-    <p className="chooser-note">Device Hub uses Xcode on this Mac. Keep Xcode open with <strong>Settings → Intelligence → Model Context Protocol</strong> turned on.</p>
   </div>;
 }
