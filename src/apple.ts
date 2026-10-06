@@ -481,10 +481,15 @@ export class AppleHub {
   }
 
   private discoverSimulators(): Promise<Device[]> {
-    return this.simulatorDiscovery ??= this.boundary.command(['simctl', 'list', 'devices', '-j']).then(simulatorDevices).then(devices => {
-      this.knownSimulatorIds = new Set(devices.map(device => device.id));
+    if (this.simulatorDiscovery) return this.simulatorDiscovery;
+    const query = this.boundary.command(['simctl', 'list', 'devices', '-j']).then(simulatorDevices).then(devices => {
+      // An invalidated discovery may still serve its original callers, but
+      // cannot replace the identities learned by a newer discovery.
+      if (this.simulatorDiscovery === query) this.knownSimulatorIds = new Set(devices.map(device => device.id));
       return devices;
-    }).finally(() => { this.simulatorDiscovery = undefined; });
+    }).finally(() => { if (this.simulatorDiscovery === query) this.simulatorDiscovery = undefined; });
+    this.simulatorDiscovery = query;
+    return query;
   }
 
   private discoverPhysical(): Promise<Device[]> {
@@ -650,6 +655,7 @@ export class AppleHub {
     }
     if (!/^[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}$/i.test(id)) throw new Error(`Xcode did not return a new simulator ID. ${id}`.trim());
     this.knownSimulatorIds.clear();
+    this.simulatorDiscovery = undefined;
     await this.registry.markCreated(id);
     const device = (await this.deviceList()).devices.find(candidate => candidate.id === id);
     if (!device) throw new Error('The new simulator did not appear in the device list.');
