@@ -798,3 +798,96 @@ test('video downsizing waits for sustained shrink and cancels a rebound before r
     }
   }
 });
+
+for (const delayInput of [false, true]) test(`resize regrows independently of intrinsic canvas size (${delayInput ? 'delayed' : 'immediate'} input)`, async () => {
+  const document = Object.assign(new EventTarget(), { hidden: false, documentElement: new ViewerNode() });
+  const window = Object.assign(new EventTarget(), { __SIM_STAGE_PREVIEW__: true, location: { search: '' } });
+  const [root, screen, canvas, frame, gesture] = Array.from({ length: 5 }, () => new ViewerNode());
+  screen.rect = { left: 0, top: 0, width: 440, height: 956 };
+  const requests: number[] = [], sockets: ViewerSocket[] = [];
+  const decoders: ViewerDecoder[] = [];
+  const inputs: Array<{ events: Array<{ type: string }>; resolve: () => void }> = [];
+  let availableHeight = 956;
+  canvas.rect = { ...screen.rect };
+  const timers = new Map<number, { callback: () => void; delay: number }>();
+  let id = 0, resized!: () => void, disconnected = 0;
+  const replacements = {
+    document, window,
+    matchMedia: () => ({ matches: false }), getComputedStyle: () => ({ maxWidth: '1000px', maxHeight: `${availableHeight}px` }),
+    IntersectionObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { constructor(callback: () => void) { resized = callback; } observe() {} disconnect() { disconnected++; } },
+    VideoDecoder: class extends ViewerDecoder { static async isConfigSupported() { return { supported: false }; } constructor(callbacks: VideoDecoderInit) { super(callbacks); decoders.push(this); } },
+    EncodedVideoChunk: class { constructor(readonly init: EncodedVideoChunkInit) {} },
+    WebSocket: class extends ViewerSocket { constructor() { super(); sockets.push(this); } },
+    setTimeout: (callback: () => void, delay: number) => { const key = ++id; timers.set(key, { callback, delay }); return key; },
+    clearTimeout: (key: number) => timers.delete(key),
+    requestAnimationFrame: (callback: FrameRequestCallback) => setImmediate(() => callback(performance.now())),
+    cancelAnimationFrame: (key: ReturnType<typeof setImmediate>) => clearImmediate(key),
+    fetch: async (_url: string, init: RequestInit) => {
+      const { name, arguments: args } = JSON.parse(init.body as string);
+      if (name === 'device_input') await new Promise<void>(resolve => { inputs.push({ events: args.events, resolve }); if (!delayInput) resolve(); });
+      const result = name === 'sim_stage_status' ? { content: [], structuredContent: { devices: [current.device], sessions: [current], warnings: [] } }
+        : name === 'device_capture' ? captured('still')
+        : name === 'device_stream' ? (requests.push(args.maxDimension), { content: [], structuredContent: { sessionId: current.id, streamId: String(requests.length).padStart(48, '0'), url: 'ws://unused', codec: 'avc1.42E01F', format: 'h264', fps: 60 } })
+        : { content: [], structuredContent: { stopped: true } };
+      return { ok: true, async json() { return result; } };
+    },
+  };
+  const previous = Object.keys(replacements).map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  for (const [name, value] of Object.entries(replacements)) Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  const viewer = await import('../src/viewer-controller.js');
+  const flush = async () => { for (let index = 0; index < 4; index++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  const shrinkTimers = () => [...timers.values()].filter(timer => timer.delay === 500);
+  let mounted: ReturnType<typeof viewer.initializeViewer> | undefined;
+  try {
+    mounted = viewer.initializeViewer({ root: root as unknown as HTMLElement, screen: screen as unknown as HTMLImageElement, canvas: canvas as unknown as HTMLCanvasElement, frame: frame as unknown as HTMLElement, gesture: gesture as unknown as HTMLElement });
+    await mounted.ready; await flush();
+    assert.equal(requests[0], 960);
+    sockets[0]!.sendFrame('h264'); await flush();
+    const decoder = decoders[0]!;
+    decoder.callbacks.output({ timestamp: decoder.chunks.at(-1)!.init.timestamp, displayWidth: 440, displayHeight: 956, close() {} } as unknown as VideoFrame);
+    await flush();
+    assert.equal(viewer.getSnapshot().liveInput, true);
+    availableHeight = 560; screen.rect.height = 560; resized();
+    const fireResize = async () => {
+      const timer = [...timers].find(([, timer]) => timer.delay === 500)!;
+      assert.ok(timer, 'resize retry remains scheduled');
+      timers.delete(timer[0]); timer[1].callback(); await flush();
+    };
+    frame.dispatchEvent(Object.assign(new Event('pointerdown', { cancelable: true }), { pointerId: 7, button: 0, clientX: 100, clientY: 100 }));
+    await flush();
+    assert.equal(inputs.length, 1);
+    frame.dispatchEvent(Object.assign(new Event('pointermove'), { pointerId: 7, clientX: 150, clientY: 150 }));
+    frame.dispatchEvent(Object.assign(new Event('pointerup'), { pointerId: 7, clientX: 150, clientY: 150 }));
+    assert.equal(frame.hasPointerCapture(7), false);
+    if (delayInput) {
+      await fireResize();
+      assert.equal(sockets[0]!.closes, 0, 'released pointer still has an in-flight down and queued move/up');
+      inputs[0]!.resolve(); await flush();
+      assert.deepEqual(inputs[1]!.events.map(event => event.type), ['move', 'up']);
+      await fireResize();
+      assert.equal(sockets[0]!.closes, 0, 'final input batch must complete before stopping its stream');
+      inputs[1]!.resolve();
+    }
+    await flush();
+    await fireResize();
+    assert.equal(sockets[0]!.closes, 1);
+    assert.equal(requests.at(-1), 576);
+    // Model the smaller decoded canvas. Its intrinsic rectangle stays small
+    // while the available stage grows, as it does at 1x DPR in a real browser.
+    canvas.width = 256; canvas.height = 576;
+    availableHeight = 956; resized();
+    assert.equal(screen.rect.height, 560);
+    await fireResize();
+    assert.equal(requests.at(-1), 960, 'regrowth is measured from available CSS limits, independently of the small canvas');
+    mounted.dispose();
+    assert.equal(disconnected, 1);
+    assert.equal(shrinkTimers().length, 0);
+  } finally {
+    mounted?.dispose();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as unknown as Record<string, unknown>)[name];
+    }
+  }
+});
