@@ -11,6 +11,7 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { resolveElement, summarizeHierarchy, type Rect, type ScreenElement } from './elements.js';
 import { actionSchema, settingsSchema, textSizeSchema, type Capture, type ConnectedSession, type Device, type DeviceAction, type DeviceActivity, type DeviceFocus, type DeviceSettings, type ElementTarget, type HubState, type LiveInput, type ScreenshotMode, type Session, type SessionOrigin } from './shared.js';
 import { SessionRegistry } from './session-registry.js';
+import { SimulatorObserver } from './simulator-observer.js';
 import { SimulatorVideo, type VideoBatch, type VideoStream } from './video.js';
 
 /** Every Sim Stage session name starts with this, so another server can recognize one left by a crashed server. */
@@ -323,6 +324,7 @@ export interface AppleHubOptions {
   /** How long a request may wait on a device before it returns an error. */
   operationDeadlineMs?: number;
   video?: SimulatorVideo;
+  observer?: SimulatorObserver;
   registry?: SessionRegistry;
 }
 
@@ -363,14 +365,17 @@ export class AppleHub {
   /** The last activity each video stream has delivered to its viewer. */
   private readonly activityCursors = new Map<string, { sessionId: string; delivered: number }>();
   private readonly video: SimulatorVideo;
+  private readonly observer?: SimulatorObserver;
 
   constructor(options: AppleHubOptions = {}) {
     this.boundary = options.boundary ?? new NativeAppleBoundary();
     this.idleTimeoutMs = options.idleTimeoutMs ?? 5 * 60_000;
     this.operationDeadlineMs = options.operationDeadlineMs ?? OPERATION_DEADLINE_MS;
     this.registry = options.registry ?? new SessionRegistry();
+    const helper = new URL(import.meta.url.endsWith('/src/apple.ts') ? '../packages/sim-stage-mcp/dist/simulator-stream' : './simulator-stream', import.meta.url);
+    this.observer = options.observer ?? (this.boundary instanceof NativeAppleBoundary ? new SimulatorObserver(helper) : undefined);
     this.video = options.video ?? new SimulatorVideo({
-      helper: new URL(import.meta.url.endsWith('/src/apple.ts') ? '../packages/sim-stage-mcp/dist/simulator-stream' : './simulator-stream', import.meta.url),
+      helper,
       keepAlive: id => this.keepVideoSessionAlive(id),
     });
   }
@@ -389,6 +394,7 @@ export class AppleHub {
     const stream = await this.video.stream(sessionId, session.public.device.id, format, maxDimension);
     if (session.closing || this.closed) {
       this.video.closeSession(sessionId);
+      this.observer?.closeSession(sessionId);
       throw new SessionExpiredError();
     }
     if (stream.streamId) this.activityCursors.set(stream.streamId, { sessionId, delivered: this.activityIds });
@@ -592,6 +598,7 @@ export class AppleHub {
     session.closing = true;
     clearTimeout(session.timer);
     this.video.closeSession(session.public.id);
+    this.observer?.closeSession(session.public.id);
     for (const [streamId, cursor] of this.activityCursors) if (cursor.sessionId === session.public.id) this.activityCursors.delete(streamId);
     this.sessions.delete(session.public.id);
     void this.registry.release(session.key, session.public.id).catch(() => {});
@@ -875,6 +882,10 @@ export class AppleHub {
     const action = actionSchema.parse(rawAction);
     return this.serial(sessionId, async (session) => {
       this.requireSimulator(session, options);
+      if ((options.settle ?? true) && session.public.device.kind === 'simulator' && !this.video.hasCapture(sessionId)) {
+        // If attachment is unavailable, preserve screenshot settling before any input.
+        await this.observer?.start(sessionId, session.public.device.id).catch(() => {});
+      }
       const target = 'element' in action ? action.element : undefined;
       if (target?.ref && options.snapshot === undefined) throw new Error('Element refs require the snapshot from the current observation. Observe again before acting.');
       if (target || options.snapshot !== undefined) {
@@ -970,7 +981,7 @@ export class AppleHub {
       }
       // Xcode observes immediately after the event, often mid-transition. Observe again once the screen is still.
       if (options.settle ?? true) {
-        const settling = session.public.device.kind === 'simulator' ? this.video.waitForIdle(sessionId) : undefined;
+        const settling = session.public.device.kind === 'simulator' ? this.video.waitForIdle(sessionId) ?? this.observer?.waitForIdle(sessionId) : undefined;
         if (settling === undefined) await this.waitForIdle(session);
         else await settling;
         observation = await synthesize('');
@@ -1023,6 +1034,7 @@ export class AppleHub {
     session.closing = true;
     clearTimeout(session.timer);
     this.video.closeSession(sessionId);
+    this.observer?.closeSession(sessionId);
     for (const [streamId, cursor] of this.activityCursors) if (cursor.sessionId === sessionId) this.activityCursors.delete(streamId);
     const ending = session.queue.then(async () => {
       try {
@@ -1042,6 +1054,7 @@ export class AppleHub {
     if (this.closing) return this.closing;
     this.closed = true;
     this.closing = (async () => {
+      this.observer?.close();
       await this.video.close();
       await Promise.allSettled([...this.connecting.values()]);
       const results = await Promise.allSettled([...this.sessions.keys()].map((id) => this.disconnect(id)));

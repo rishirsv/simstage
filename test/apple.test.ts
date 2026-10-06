@@ -1033,3 +1033,22 @@ test('failed holder persistence cleans up only the session created inside its ex
     assert.deepEqual((await f.hub.status()).sessions, []);
   }
 });
+
+test('damage-only observers settle actions without video and release with the session', async t => {
+  const f = await fixture(t);
+  let attached = 0, waits = 0, stopped = 0;
+  Reflect.set(f.hub, 'observer', {
+    start: async () => { attached++; },
+    waitForIdle: () => { waits++; return Promise.resolve(false); },
+    closeSession: () => { stopped++; },
+    close: () => {},
+  });
+  const session = await f.hub.connect('sim-1');
+  const result = await f.hub.action(session.id, { type: 'tap', x: 10, y: 20 });
+  assert.equal(attached, 1);
+  assert.equal(waits, 1);
+  assert.ok(result.snapshot, 'a timed out animation still gets a final fresh snapshot');
+  assert.equal(f.commands.some(args => args.includes('screenshot')), false);
+  await f.hub.disconnect(session.id);
+  assert.equal(stopped, 1);
+});

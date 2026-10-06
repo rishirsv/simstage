@@ -261,6 +261,10 @@ export class SimulatorVideo {
     this.options.keepAlive?.(sessionId);
   }
 
+  hasCapture(sessionId: string): boolean {
+    return [...this.channels.values()].some(channel => channel.sessionId === sessionId && !!channel.process?.stdin.writable);
+  }
+
   /** Uses the active damage callback, never idle-refresh output, to settle an action. */
   waitForIdle(sessionId: string, budgetMs = 2000): Promise<boolean> | undefined {
     const channel = [...this.channels.values()].find(channel => channel.sessionId === sessionId && channel.process?.stdin.writable);
