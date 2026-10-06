@@ -34,7 +34,7 @@ export const toolInputs = {
     connect: z.boolean().default(true).describe("Boot the simulator and open a session (default true)."),
   }).refine(value => Boolean(value.deviceType) !== Boolean(value.cloneFrom), "Choose either deviceType or cloneFrom."),
   simulator_delete: z.object({ deviceId }),
-  device_capture: z.object({ sessionId, accessibilityEnabled: z.boolean().optional(), resolution, screenshot: screenshotOption }),
+  device_capture: z.object({ sessionId, background: z.boolean().optional(), accessibilityEnabled: z.boolean().optional(), resolution, screenshot: screenshotOption }),
   device_frame: z.object({ sessionId }),
   device_stream: z.object({ sessionId, codec: z.enum(["hevc", "h264"]).default("h264"), maxDimension: z.number().int().min(320).max(8192).optional().describe("Longest encoded edge in pixels; the simulator's resolution when larger or unset.") }),
   device_stream_read: z.object({ sessionId, streamId: z.string().regex(/^[a-f0-9]{48}$/), recover: z.boolean().optional() }),
@@ -175,7 +175,7 @@ export async function callHubTool(hub: Hub, name: string, args: unknown): Promis
       }
       case "device_capture": {
         const input = toolInputs.device_capture.parse(args);
-        return captureResult(await hub.capture(input.sessionId, { accessibilityEnabled: input.accessibilityEnabled, screenshot: input.screenshot, ...(input.resolution ? { resolution: input.resolution } : {}) }));
+        return captureResult(await hub.capture(input.sessionId, { ...(input.background === undefined ? {} : { background: input.background }), accessibilityEnabled: input.accessibilityEnabled, screenshot: input.screenshot, ...(input.resolution ? { resolution: input.resolution } : {}) }));
       }
       case "device_frame": {
         const input = toolInputs.device_frame.parse(args);
