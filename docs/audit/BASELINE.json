@@ -1,0 +1,50 @@
+{
+  "measuredAt": "2026-10-06T00:29:41.536Z",
+  "node": "v25.5.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "hierarchy": {
+    "fixture": "settings-hierarchy.txt",
+    "iterations": 1000,
+    "meanMs": 0.139689375
+  },
+  "trials": [
+    {
+      "initializedMs": 130.58270800000003,
+      "resourceMs": 8.991333999999995,
+      "toolCount": 22,
+      "viewerUtf8Bytes": 1296594
+    },
+    {
+      "initializedMs": 125.866042,
+      "resourceMs": 7.1335410000000365,
+      "toolCount": 22,
+      "viewerUtf8Bytes": 1296594
+    },
+    {
+      "initializedMs": 120.43379200000004,
+      "resourceMs": 6.795166999999992,
+      "toolCount": 22,
+      "viewerUtf8Bytes": 1296594
+    },
+    {
+      "initializedMs": 122.02358299999992,
+      "resourceMs": 6.399416999999971,
+      "toolCount": 22,
+      "viewerUtf8Bytes": 1296594
+    },
+    {
+      "initializedMs": 130.1373329999999,
+      "resourceMs": 6.678208000000041,
+      "toolCount": 22,
+      "viewerUtf8Bytes": 1296594
+    }
+  ],
+  "runtimeBytes": {
+    "app.js": 1211833,
+    "app.css": 84518,
+    "server.js": 1573627,
+    "simulator-stream": 89280
+  },
+  "limits": "Warm dependencies and OS caches. No real-device, input-to-photon, decoder, host-rendering, CPU, RSS, or network baseline."
+}

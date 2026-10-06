@@ -1,5 +1,11 @@
 # Apple Device Hub
 
+> Private migration staging. This branch is not a public release. Existing publisher
+> attribution and `UNLICENSED` status are preserved. See the
+> [migration boundary](docs/audit/MIGRATION.md), [readiness audit](docs/audit/READINESS.md)
+> and [roadmap](.plans/ROADMAP.md). Git installation still loads upstream npm 0.1.3;
+> it does not load this branch's changed runtime. Automatic publishing is disabled.
+
 A local MCP server and sidebar app for viewing and controlling Apple simulators and connected physical devices inside the ChatGPT desktop app. Simulators have live hardware HEVC video with H.264 fallback; device actions and accessibility observations pass through Apple's Xcode MCP bridge.
 
 This project targets the ChatGPT/Codex desktop host with local-plugin support and uses its `thread` and `settings` MCP App entrypoints. Open **New tab → More tools → Simulator** to show the viewer beside the conversation. It does not require a cloud server or tunnel. See [VALIDATION.md](VALIDATION.md) for the host builds tested, [privacy and data handling](docs/PRIVACY.md), and the [gallery submission packet](docs/gallery/SUBMISSION.md).

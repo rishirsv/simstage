@@ -111,7 +111,7 @@ for (const mode of ["websocket", "relay-preview", "relay-host", "hevc-capture-fa
       if (args.updateAccessibilityPreference === false) {
         if (attachmentCaptureFails) throw new Error("Screen capture failed.");
         return captureResult({
-          session: current, capturedAt: "2026-10-05T01:00:00.000Z", bundleId: "com.rishi.steady", snapshot: 42,
+          session: current, capturedAt: "2026-10-05T01:00:00.000Z", bundleId: "com.example.sample", snapshot: 42,
           coordinateSpace: { width: 440, height: 956 },
           screenshot: { mimeType: "image/png", data: "fresh-attachment-still", width: 1320, height: 2868 },
           hierarchy: "Button, {{16, 100}, {80, 44}}, label: 'Review'",
@@ -251,7 +251,7 @@ for (const mode of ["websocket", "relay-preview", "relay-host", "hevc-capture-fa
       assert.equal((payload.content?.[1] as { data: string }).data, "fresh-attachment-still", "the attachment uses a fresh still rather than video or the previous screenshot");
       assert.match((payload.content?.[0] as { text: string }).text, /\[e1\] Button "Review" selected @ 56,122/);
       assert.match((payload.content?.[0] as { text: string }).text, /Accessibility hierarchy:\nButton/);
-      assert.equal(payload.structuredContent?.bundleId, "com.rishi.steady");
+      assert.equal(payload.structuredContent?.bundleId, "com.example.sample");
       assert.equal(payload.structuredContent?.snapshot, 42);
       assert.equal(payload.structuredContent?.capturedAt, "2026-10-05T01:00:00.000Z");
       assert.deepEqual(payload.structuredContent?.coordinateSpace, { width: 440, height: 956 });

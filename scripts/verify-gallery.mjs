@@ -52,7 +52,7 @@ try {
       for (const name of testCase.tools_triggered.split(", ")) assert.ok(tools.some(tool => tool.name === name), `Review case references missing tool ${name}`);
     }
     const entrypoints = tools.flatMap(tool => tool._meta?.["openai/ui"]?.entrypoints ?? []).map(entry => entry.type);
-    assert.deepEqual([...new Set(entrypoints)].sort(), ["settings", "thread"]);
+    assert.deepEqual([...new Set(entrypoints)].sort(), ["global", "settings", "thread"]);
     assert.ok((await client.readResource({ uri: "ui://apple-device-hub/viewer" })).contents[0].text.length > 100_000);
   } finally {
     await client.close();

@@ -6,7 +6,7 @@ Use a dedicated sample simulator on an Apple Silicon Mac. Record the release ver
 
 1. Install Xcode 27, open it and enable **Settings → Intelligence → Model Context Protocol**. Complete Apple's normal device/simulator setup.
 2. Install Node 22+ and the desktop host's `codex` CLI. Install the release with `codex plugin marketplace add mweinbach/AppleSimChatGPTPlugin --ref v<version>` and `codex plugin add apple-device-hub@apple-device-hub`, or use the partner-approved ZIP installation route.
-3. Restart the host and start a fresh chat. Confirm the loaded version and its MCP tools (20 from v0.1.4). Open the global viewer and the settings entrypoint, and open the task viewer from `open_device_hub`.
+3. Restart the host and start a fresh chat. Confirm the loaded version and its MCP tools (22 in this 0.1.3 source snapshot). Open the global viewer and the settings entrypoint, and open the task viewer from `open_device_hub`.
 4. Use a sample iPhone simulator without personal accounts. Keep the current appearance value available so the setting test can restore it. Physical devices are optional acceptance coverage, not required for the simulator cases.
 
 ## Record each case
