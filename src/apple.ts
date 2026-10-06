@@ -369,6 +369,9 @@ export class AppleHub {
   private closed = false;
   private closing?: Promise<void>;
   private snapshots = 0;
+  private knownSimulatorIds = new Set<string>();
+  private simulatorDiscovery?: Promise<Device[]>;
+  private physicalDiscovery?: Promise<Device[]>;
   private activityIds = 0;
   /** The last activity each video stream has delivered to its viewer. */
   private readonly activityCursors = new Map<string, { sessionId: string; delivered: number }>();
@@ -477,10 +480,25 @@ export class AppleHub {
     }
   }
 
-  private async deviceList(): Promise<{ devices: Device[]; warnings: string[] }> {
+  private discoverSimulators(): Promise<Device[]> {
+    return this.simulatorDiscovery ??= this.boundary.command(['simctl', 'list', 'devices', '-j']).then(simulatorDevices).then(devices => {
+      this.knownSimulatorIds = new Set(devices.map(device => device.id));
+      return devices;
+    }).finally(() => { this.simulatorDiscovery = undefined; });
+  }
+
+  private discoverPhysical(): Promise<Device[]> {
+    return this.physicalDiscovery ??= this.deviceJson(['list', 'devices']).then(physicalDevices).finally(() => { this.physicalDiscovery = undefined; });
+  }
+
+  private async deviceList(selectedId?: string): Promise<{ devices: Device[]; warnings: string[] }> {
+    const simulatorQuery = this.discoverSimulators();
+    const physicalQuery = selectedId && this.knownSimulatorIds.has(selectedId)
+      ? simulatorQuery.then(devices => devices.some(device => device.id === selectedId) ? [] : this.discoverPhysical(), () => this.discoverPhysical())
+      : this.discoverPhysical();
     const [simulators, physical, created] = await Promise.allSettled([
-      this.boundary.command(['simctl', 'list', 'devices', '-j']).then(simulatorDevices),
-      this.deviceJson(['list', 'devices']).then(physicalDevices),
+      simulatorQuery,
+      physicalQuery,
       this.registry.createdDevices(),
     ]);
     const devices: Device[] = [];
@@ -528,7 +546,7 @@ export class AppleHub {
   }
 
   private async startSession(deviceId: string, { takeOver = false }: ConnectOptions, retried = false): Promise<ConnectedSession> {
-    const { devices, warnings } = await this.deviceList();
+    const { devices, warnings } = await this.deviceList(deviceId);
     if (this.closed) throw new Error('Sim Stage is closed.');
     const device = devices.find((candidate) => candidate.id === deviceId);
     if (!device) throw new Error(`Device is not in the local device list. ${warnings.join(' ')}`.trim());
@@ -631,6 +649,7 @@ export class AppleHub {
       id = (await this.boundary.command(['simctl', 'create', options.name ?? `${deviceType.name} (Sim Stage)`, deviceType.identifier, runtime.identifier])).trim();
     }
     if (!/^[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}$/i.test(id)) throw new Error(`Xcode did not return a new simulator ID. ${id}`.trim());
+    this.knownSimulatorIds.clear();
     await this.registry.markCreated(id);
     const device = (await this.deviceList()).devices.find(candidate => candidate.id === id);
     if (!device) throw new Error('The new simulator did not appear in the device list.');
@@ -657,6 +676,7 @@ export class AppleHub {
       for (const session of local) this.expire(session);
       if (device.state !== 'Shutdown') await this.boundary.command(['simctl', 'shutdown', deviceId], 60_000).catch(() => {});
       await this.boundary.command(['simctl', 'delete', deviceId], 60_000);
+      this.knownSimulatorIds.delete(deviceId);
     });
     await this.registry.forgetCreated(deviceId);
     await this.registry.clearFocus(deviceId);

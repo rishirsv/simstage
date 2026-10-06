@@ -1139,3 +1139,41 @@ test('damage-only observers settle actions without video and release with the se
   assert.equal(stopped, 1);
 
 });
+
+test('known simulators connect without physical discovery but still revalidate availability', async t => {
+  const f = await fixture(t);
+  await f.hub.status();
+  let physical = 0;
+  f.setCommandHook(async args => {
+    if (args[0] === 'devicectl' && args.includes('list')) { physical++; throw new Error('Physical discovery stalled'); }
+    return undefined;
+  });
+  const session = await f.hub.connect('sim-1');
+  assert.equal(physical, 0);
+  await f.hub.disconnect(session.id);
+  f.setCommandHook(async args => {
+    if (args[0] === 'simctl' && args.includes('list')) return JSON.stringify({ devices: {} });
+    return undefined;
+  });
+  await assert.rejects(f.hub.connect('sim-1'), /not in the local device list/);
+  const lastStart = f.calls.filter(call => call.name === 'DeviceInteractionStartSession');
+  assert.equal(lastStart.length, 1, 'deleted simulators cannot use remembered identity to start a session');
+});
+
+test('concurrent status calls share in-flight discovery and later calls discover again', async t => {
+  const f = await fixture(t);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.setCommandHook(async args => { if (args.includes('list')) await gate; return undefined; });
+  const first = f.hub.status(), second = f.hub.status();
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  await Promise.all([first, second]);
+  assert.equal(f.commands.filter(args => args[0] === 'simctl').length, 1);
+  assert.equal(f.commands.filter(args => args[0] === 'devicectl').length, 1);
+  f.setCommandHook(undefined);
+  await f.hub.status();
+  assert.equal(f.commands.filter(args => args[0] === 'simctl').length, 2);
+  assert.equal(f.commands.filter(args => args[0] === 'devicectl').length, 2);
+
+});
