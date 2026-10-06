@@ -504,3 +504,21 @@ test("relay age correction avoids a false recovery while retaining delayed-respo
     reads.shift()?.([]);
   }, { now: () => 0 });
 });
+
+
+test("a codec-chain reset identifies the frame that triggered it within a received batch", async () => {
+  await fakeBrowser(async browser => {
+    const events: Array<{ phase: string; id: number; ageMs: number }> = [];
+    const reads: Array<(frames: SimulatorVideoFrame[]) => void> = [];
+    const player = new SimulatorVideoPlayer(browser.canvas, { sessionId: "session", url: "unused", codec: "avc1.640033", fps: 60 }, () => {}, error => assert.fail(error.message), {
+      read: () => new Promise(resolve => reads.push(resolve)), stop() {},
+    }, event => events.push(event));
+    player.start();
+    const first = envelope(keyframe, 30), last = envelope(delta, 10);
+    reads.shift()!([first, last]);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(events.filter(event => event.phase === "reset").map(({ id, ageMs }) => ({ id, ageMs })), [{ id: first.id, ageMs: 30 }]);
+    assert.deepEqual(events.filter(event => event.phase === "received").map(event => event.id), [first.id, last.id]);
+    player.stop(); reads.shift()?.([]);
+  }, { now: () => 0 });
+});

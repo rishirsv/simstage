@@ -203,8 +203,6 @@ export class SimulatorVideoPlayer {
   }
 
   private received(frame: SimulatorVideoFrame, receivedAt: number) {
-    const { id, capturedAtUnixMs, ageMs } = frame;
-    this.lastReceived = { frame: { id, capturedAtUnixMs, ageMs }, receivedAt };
     this.record("received", frame, receivedAt);
   }
 
@@ -241,6 +239,8 @@ export class SimulatorVideoPlayer {
   }
 
   private decode(frame: SimulatorVideoFrame, receivedAt: number) {
+    const { id, capturedAtUnixMs, ageMs } = frame;
+    this.lastReceived = { frame: { id, capturedAtUnixMs, ageMs }, receivedAt };
     const data = frame.data;
     if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(true, { frame, receivedAt }); return; }
     const decoder = this.decoder!;
