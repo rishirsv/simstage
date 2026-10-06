@@ -731,3 +731,63 @@ test("switching video devices resets coordinate refresh and protects the new ref
     }
   }
 });
+
+test('video downsizing waits for sustained shrink and cancels a rebound before restarting', async () => {
+  const document = Object.assign(new EventTarget(), { hidden: false, documentElement: new ViewerNode() });
+  const window = Object.assign(new EventTarget(), { __SIM_STAGE_PREVIEW__: true, location: { search: '' } });
+  const [root, screen, canvas, frame, gesture] = Array.from({ length: 5 }, () => new ViewerNode());
+  screen.rect = { left: 0, top: 0, width: 440, height: 956 };
+  const requests: number[] = [], sockets: ViewerSocket[] = [];
+  const timers = new Map<number, { callback: () => void; delay: number }>();
+  let id = 0, resized!: () => void, disconnected = 0;
+  const replacements = {
+    document, window,
+    matchMedia: () => ({ matches: false }), getComputedStyle: () => ({ maxHeight: 'none' }),
+    IntersectionObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { constructor(callback: () => void) { resized = callback; } observe() {} disconnect() { disconnected++; } },
+    VideoDecoder: class extends ViewerDecoder { static async isConfigSupported() { return { supported: false }; } },
+    EncodedVideoChunk: class { constructor(readonly init: EncodedVideoChunkInit) {} },
+    WebSocket: class extends ViewerSocket { constructor() { super(); sockets.push(this); } },
+    setTimeout: (callback: () => void, delay: number) => { const key = ++id; timers.set(key, { callback, delay }); return key; },
+    clearTimeout: (key: number) => timers.delete(key),
+    fetch: async (_url: string, init: RequestInit) => {
+      const { name, arguments: args } = JSON.parse(init.body as string);
+      const result = name === 'sim_stage_status' ? { content: [], structuredContent: { devices: [current.device], sessions: [current], warnings: [] } }
+        : name === 'device_capture' ? captured('still')
+        : name === 'device_stream' ? (requests.push(args.maxDimension), { content: [], structuredContent: { sessionId: current.id, streamId: String(requests.length).padStart(48, '0'), url: 'ws://unused', codec: 'avc1.42E01F', format: 'h264', fps: 60 } })
+        : { content: [], structuredContent: { stopped: true } };
+      return { ok: true, async json() { return result; } };
+    },
+  };
+  const previous = Object.keys(replacements).map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  for (const [name, value] of Object.entries(replacements)) Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  const viewer = await import('../src/viewer-controller.js');
+  const flush = async () => { for (let index = 0; index < 4; index++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  const shrinkTimers = () => [...timers.values()].filter(timer => timer.delay === 500);
+  let mounted: ReturnType<typeof viewer.initializeViewer> | undefined;
+  try {
+    mounted = viewer.initializeViewer({ root: root as unknown as HTMLElement, screen: screen as unknown as HTMLImageElement, canvas: canvas as unknown as HTMLCanvasElement, frame: frame as unknown as HTMLElement, gesture: gesture as unknown as HTMLElement });
+    await mounted.ready; await flush();
+    assert.equal(requests[0], 960);
+    screen.rect.height = 760; resized();
+    assert.equal(shrinkTimers().length, 0, 'small reductions keep the current encoder');
+    screen.rect.height = 560; resized();
+    assert.equal(shrinkTimers().length, 1);
+    screen.rect.height = 780; resized();
+    assert.equal(shrinkTimers().length, 0, 'a rebound cancels pending shrink');
+    screen.rect.height = 560; resized();
+    const timer = [...timers].find(([, timer]) => timer.delay === 500)!;
+    timers.delete(timer[0]); timer[1].callback(); await flush();
+    assert.equal(sockets[0]!.closes, 1);
+    assert.equal(requests.at(-1), 576);
+    mounted.dispose();
+    assert.equal(disconnected, 1);
+    assert.equal(shrinkTimers().length, 0);
+  } finally {
+    mounted?.dispose();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as unknown as Record<string, unknown>)[name];
+    }
+  }
+});
