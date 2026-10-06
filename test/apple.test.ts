@@ -1124,6 +1124,7 @@ test('damage-only observers settle actions without video and release with the se
   let attached = 0, waits = 0, stopped = 0;
   Reflect.set(f.hub, 'observer', {
     start: async () => { attached++; },
+    restart: async () => { attached++; },
     waitForIdle: () => { waits++; return Promise.resolve(false); },
     closeSession: () => { stopped++; },
     close: () => {},
