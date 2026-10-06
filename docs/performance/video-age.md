@@ -17,14 +17,16 @@ The middle case removes a false recovery caused by counting server wait twice.
 It establishes correctness under that condition, not its frequency in a real
 host or an improvement in median video latency. Thirty preview and thirty
 reference SDK-host journey samples per variant are documented in
-[the SDK experiment](sdk-import.md); connection timings are individual trials.
+[the SDK experiment](https://github.com/rishirsv/simstage/blob/7f09d43ca34d517a1248b537befa634f0c12ee16/docs/performance/sdk-import.md); connection timings are individual trials.
 
 The viewer now retains bounded local counts and mean/max ages for receive,
 decode-start, decode, draw, rendering opportunity, stale drop, chain reset, and
 keyframe recovery. Received milestones precede decoder backpressure; recovery
 counts include frames rejected before any decode. One latest metadata identity
 is retained without its payload. `getVideoDiagnostics()` exposes a copy of
-aggregates; no external telemetry service is introduced. Presentation denotes a
+aggregates; the mounted viewer also exposes
+`window.__SIM_STAGE_VIDEO_DIAGNOSTICS__()` for local measurement. No external
+telemetry service is introduced. Presentation denotes a
 rendering opportunity, not physical scanout.
 
 Validation: typecheck and focused video, player, transport, and viewer tests,
