@@ -56,6 +56,34 @@ remote check runs. No external telemetry backend or field dashboard was added.
 The viewer exposes bounded local phase/age/recovery aggregates through
 `window.__SIM_STAGE_VIDEO_DIAGNOSTICS__()`.
 
+The combined 30-sample journey run completed in each transport:
+
+| Journey | Original preview | Combined preview | Original reference MCP | Combined reference MCP |
+| --- | ---: | ---: | ---: | ---: |
+| Pointer-to-visible change p75 | 67.4 ms | 70.8 ms | 79.6 ms | 80.1 ms |
+| Agent action-to-observation p75 | 1,605.1 ms | 1,309.4 ms | 1,512.4 ms | 1,299.7 ms |
+| Release-to-settled paint p75 | 2,443.2 ms | 2,477.8 ms | 2,429.4 ms | 2,445.7 ms |
+| Connect-to-first paint, one trial | 30.92 s | 4.51 s | 3.01 s | 2.06 s |
+
+The ordered journey runs establish integration behavior, not causal timing
+percentages. Connection trials have different cold/warm state. The original
+and combined fixtures use the same simulator model and browser version. Both
+combined transports record zero stale drops and zero keyframe recovery requests;
+one startup codec-chain reset per transport is expected. Mean draw age is
+19.36/20.04 ms and mean rendering-opportunity age is 32.87/34.13 ms. Ages come
+from the corrected local player aggregates; the retained older probe-age columns
+use the full RTT bound. The repository benchmark now subtracts valid server wait
+and has a separate one-sample-per-transport smoke check.
+
+Real combined tap, double-tap, and hold checks advance markers by 1, 2, and 1,
+use only fresh target validation plus the final observation, and reuse the
+result for a background capture without another synthesis.
+
+Built combined assets have SHA-256 hashes:
+
+- JS: `e46ee457e89ed020f370d553d4b82f00130da1c5fd8f1e24a73597ff8de01192`.
+- Native helper: `6e747219bdc8a43e71d9cccfc4246f469a1910e26fff3f3c9d34d9224495ed74`.
+
 Raw samples, prototypes, benchmark programs, images, and logs remain in ignored
 `artifacts/performance`. They are local reproducibility artifacts, not committed
 or uploaded device inventories. The original investigation and proposed field
