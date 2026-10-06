@@ -704,3 +704,28 @@ test("a direct viewer recovers from an idle delta chain by requesting one keyfra
   assert.deepEqual((data as Buffer).subarray(16), accessUnit);
   assert.equal(f.children.length, 1, "fresh recovery retains the active encoder");
 });
+
+test("input-only taps wait for native delivery and dispose acknowledgments on failure or shutdown", async t => {
+  const f = fixture(t, singleFrame);
+  assert.equal(f.video.tap("session-one", .2, .3), undefined);
+  const stream = await f.video.stream("session-one", "simulator-one");
+  await f.video.read("session-one", stream.streamId!);
+  type Channel = { settles: Map<number, unknown> };
+  const channel = [...(Reflect.get(f.video, "channels") as Map<string, Channel>).values()][0]!;
+  const diagnostic = Reflect.get(f.video, "diagnostic") as (channel: Channel, line: string) => void;
+  assert.equal(f.video.tap("session-one", .2, .3), undefined, 'unknown input capability keeps the bridge path');
+  diagnostic.call(f.video, channel, JSON.stringify({ event: 'input', available: true }));
+  const success = f.video.tap("session-one", .2, .3)!;
+  diagnostic.call(f.video, channel, JSON.stringify({ event: 'input-complete', requestId: [...channel.settles.keys()][0], success: true }));
+  await success;
+  assert.equal(channel.settles.size, 0);
+  const failure = f.video.tap("session-one", .2, .3)!;
+  const failed = assert.rejects(failure, /delivery failed/);
+  diagnostic.call(f.video, channel, JSON.stringify({ event: 'input-complete', requestId: [...channel.settles.keys()][0], success: false }));
+  await failed;
+  const pending = f.video.tap("session-one", .2, .3)!;
+  const stopped = assert.rejects(pending, /stopped/);
+  f.video.closeSession("session-one");
+  await stopped;
+  assert.equal(channel.settles.size, 0);
+});
