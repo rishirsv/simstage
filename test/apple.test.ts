@@ -1033,3 +1033,37 @@ test('failed holder persistence cleans up only the session created inside its ex
     assert.deepEqual((await f.hub.status()).sessions, []);
   }
 });
+
+test('acknowledged simulator taps skip only the discarded observation and preserve fresh ref validation', async t => {
+  const video = new SimulatorVideo();
+  const taps: unknown[][] = [];
+  video.tap = (...args) => { taps.push(args); return Promise.resolve(); };
+  video.waitForIdle = () => Promise.resolve(true);
+  const f = await fixture(t, 60_000, video);
+  await writeFile(f.hierarchyPath, portrait + "\n  Button, {{10, 20}, {80, 40}}, label: 'Advance', identifier: 'advance', hitPoint: {50, 40}");
+  const session = await f.hub.connect('sim-1');
+  const before = f.calls.length;
+  await f.hub.action(session.id, { type: 'tap', x: 10, y: 20 });
+  assert.deepEqual(f.calls.slice(before).map(call => call.args.interactionCommand), ['']);
+  assert.deepEqual(taps[0], [session.id, 10 / 440, 20 / 956, undefined, undefined]);
+  const capture = await f.hub.capture(session.id);
+  const ref = capture.elements!.find(element => element.label === 'Advance')!.ref;
+  const start = f.calls.length;
+  await f.hub.action(session.id, { type: 'tap', element: { ref } }, { snapshot: capture.snapshot });
+  assert.deepEqual(f.calls.slice(start).map(call => call.args.interactionCommand), ['', ''], 'validation and final snapshot remain fresh');
+  await writeFile(f.hierarchyPath, portrait);
+  await assert.rejects(f.hub.action(session.id, { type: 'tap', element: { ref } }, { snapshot: capture.snapshot }), /stale/);
+  assert.equal(taps.length, 2, 'stale refs cannot deliver input');
+  const noSettle = f.calls.length;
+  await f.hub.action(session.id, { type: 'tap', x: 10, y: 20 }, { settle: false });
+  assert.deepEqual(f.calls.slice(noSettle).map(call => call.args.interactionCommand), ['t 10 20']);
+  for (const action of [{ type: 'type', text: 'Hi' }, { type: 'launchApp', bundleId: 'dev.example' }] as const) {
+    const start = f.calls.length;
+    await f.hub.action(session.id, action);
+    assert.equal(f.calls.length - start, 2, 'bridge-only input retains both observations');
+  }
+  video.tap = () => Promise.reject(new Error('Delivery failed'));
+  const failed = f.calls.length;
+  await assert.rejects(f.hub.action(session.id, { type: 'tap', x: 10, y: 20 }), /Delivery failed/);
+  assert.equal(f.calls.length, failed, 'uncertain input is never replayed through the bridge');
+});

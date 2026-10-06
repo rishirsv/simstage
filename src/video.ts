@@ -263,6 +263,18 @@ export class SimulatorVideo {
     this.options.keepAlive?.(sessionId);
   }
 
+  /** Acknowledged input-only tap, when an active helper supports simulator input. */
+  tap(sessionId: string, x: number, y: number, count = 1, duration = 0.05): Promise<void> | undefined {
+    const channel = [...this.channels.values()].find(channel => channel.sessionId === sessionId && channel.process?.stdin.writable && channel.input?.available === true);
+    if (!channel) return undefined;
+    const id = ++this.settleId;
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { channel.settles.delete(id); reject(new Error("Simulator tap acknowledgment timed out. Observe before retrying.")); }, duration * count * 1000 + 3000);
+      channel.settles.set(id, { resolve: success => success ? resolve() : reject(new Error("Simulator tap delivery failed. Observe before retrying.")), reject, timer });
+      channel.process!.stdin.write(`tap ${id} ${x} ${y} ${count} ${duration}\n`);
+    });
+  }
+
   /** Uses the active damage callback, never idle-refresh output, to settle an action. */
   waitForIdle(sessionId: string, budgetMs = 2000): Promise<boolean> | undefined {
     const channel = [...this.channels.values()].find(channel => channel.sessionId === sessionId && channel.process?.stdin.writable);
@@ -473,10 +485,10 @@ export class SimulatorVideo {
 
   private diagnostic(channel: Channel, line: string) {
     try {
-      const event = JSON.parse(line) as { event?: string; available?: unknown; message?: unknown; requestId?: number; quiet?: boolean };
-      if (event.event === "settled" && typeof event.requestId === "number") {
+      const event = JSON.parse(line) as { event?: string; available?: unknown; message?: unknown; requestId?: number; quiet?: boolean; success?: boolean };
+      if ((event.event === "settled" || event.event === "input-complete") && typeof event.requestId === "number") {
         const pending = channel.settles.get(event.requestId);
-        if (pending) { clearTimeout(pending.timer); channel.settles.delete(event.requestId); pending.resolve(event.quiet === true); }
+        if (pending) { clearTimeout(pending.timer); channel.settles.delete(event.requestId); pending.resolve(event.event === "input-complete" ? event.success === true : event.quiet === true); }
       }
       if (event.event === "input" && typeof event.available === "boolean") {
         channel.input = { available: event.available, ...(typeof event.message === "string" ? { message: event.message } : {}) };

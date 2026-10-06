@@ -910,7 +910,7 @@ export class AppleHub {
         summary: element ? `${summary} ${element.label ? `“${element.label}”` : element.role}` : summary,
         ...(element ? { ref: element.ref } : {}), ...(at ? { point: at } : {}), ...(to ? { to } : {}),
       });
-      let observation: NativeObservation;
+      let observation: NativeObservation | undefined;
       switch (action.type) {
         case 'tap': {
           const element = action.element ? this.element(session, action.element) : undefined;
@@ -918,7 +918,14 @@ export class AppleHub {
           if (!target) throw new Error('Tap needs an element target or both x and y.');
           const command = `${action.clickCount === 2 ? 'd' : 't'} ${point(target.x, target.y)}${action.duration !== undefined ? ` ${action.duration}` : ''}`;
           note(action.clickCount === 2 ? 'Double-tap' : action.duration !== undefined ? 'Long press' : 'Tap', element, target);
-          observation = await synthesize(command);
+          const space = bounds();
+          const input = (options.settle ?? true) && session.public.device.kind === 'simulator'
+            ? this.video.tap?.(sessionId, round(target.x) / space.width, round(target.y) / space.height, action.clickCount, action.duration)
+            : undefined;
+          if (input) {
+            try { await input; }
+            catch (error) { session.snapshot = undefined; throw error; }
+          } else observation = await synthesize(command);
           break;
         }
         case 'swipe': {
@@ -975,7 +982,7 @@ export class AppleHub {
         else await settling;
         observation = await synthesize('');
       }
-      return this.captureResult(session, observation, options.accessibilityEnabled ?? session.public.accessibilityEnabled, options);
+      return this.captureResult(session, observation!, options.accessibilityEnabled ?? session.public.accessibilityEnabled, options);
     });
   }
 

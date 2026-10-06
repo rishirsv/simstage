@@ -453,25 +453,27 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     }
 }
 
-- (void)sendHID:(IndigoMessage *)message {
-    if (!message) { diagnostic(@{@"event": @"input-error", @"message": @"SimulatorKit could not create an input event."}); return; }
+- (BOOL)sendHID:(IndigoMessage *)message {
+    if (!message) { diagnostic(@{@"event": @"input-error", @"message": @"SimulatorKit could not create an input event."}); return NO; }
     dispatch_semaphore_t delivered = dispatch_semaphore_create(0);
     __block NSError *failure = nil;
     ((void(*)(id, SEL, void *, BOOL, dispatch_queue_t, id))objc_msgSend)(hidClient, sel_registerName("sendWithMessage:freeWhenDone:completionQueue:completion:"), message, YES, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(NSError *error) {
         failure = error;
         dispatch_semaphore_signal(delivered);
     });
-    if (dispatch_semaphore_wait(delivered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC))) diagnostic(@{@"event": @"input-error", @"message": @"Timed out delivering simulator input."});
-    else if (failure) diagnostic(@{@"event": @"input-error", @"message": failure.localizedDescription ?: @"The simulator rejected an input event."});
+    if (dispatch_semaphore_wait(delivered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC))) { diagnostic(@{@"event": @"input-error", @"message": @"Timed out delivering simulator input."}); return NO; }
+    if (failure) { diagnostic(@{@"event": @"input-error", @"message": failure.localizedDescription ?: @"The simulator rejected an input event."}); return NO; }
+    return YES;
 }
 
-- (void)touchPhase:(char)phase x:(double)x y:(double)y {
+- (BOOL)touchPhase:(char)phase x:(double)x y:(double)y {
     BOOL down = phase == 'd' || phase == 'm';
-    if (!hidClient || (!down && !touching)) return;
+    if (!hidClient || (!down && !touching)) return NO;
     CGPoint point = [self surfacePointForX:x y:y];
-    [self sendHID:touchMessage(mouseMessage, point, CGSizeMake(atomic_load(&surfaceWidth), atomic_load(&surfaceHeight)), down)];
+    BOOL delivered = [self sendHID:touchMessage(mouseMessage, point, CGSizeMake(atomic_load(&surfaceWidth), atomic_load(&surfaceHeight)), down)];
     touching = down;
     touchPoint = point;
+    return delivered;
 }
 
 - (void)pressHome {
@@ -498,7 +500,8 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     char phase = 0;
     double x = NAN, y = NAN;
     uint64_t request;
-    double quietMs, budgetMs;
+    double quietMs, budgetMs, duration;
+    int count;
     if (!strcmp(line, "k")) {
         dispatch_async(queue, ^{ self->forceKeyFrame = YES; [self encodeLatestFrame]; });
     } else if (sscanf(line, "s %llu %lf %lf", &request, &quietMs, &budgetMs) == 3 && quietMs > 0 && budgetMs >= quietMs && budgetMs <= 10000) {
@@ -509,6 +512,17 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
             uint64_t deadline = started + (uint64_t)(budgetMs * 1e6 * base.denom / base.numer);
             [self checkSettling:request quietMs:quietMs deadline:deadline started:started];
         });
+    } else if (sscanf(line, "tap %llu %lf %lf %d %lf", &request, &x, &y, &count, &duration) == 5 && isfinite(x) && isfinite(y) && x >= 0 && x < 1 && y >= 0 && y < 1 && count >= 1 && count <= 2 && duration >= 0.05 && duration <= 5) {
+        BOOL success = YES;
+        for (int index = 0; index < count; index++) {
+            BOOL down = [self touchPhase:'d' x:x y:y];
+            usleep((useconds_t)(duration * 1000000));
+            BOOL up = [self touchPhase:'u' x:x y:y];
+            success = success && down && up;
+            if (!success) break;
+            if (index + 1 < count) usleep(80000);
+        }
+        diagnostic(@{@"event": @"input-complete", @"requestId": @(request), @"success": @(success)});
     } else if (!strcmp(line, "home")) {
         [self pressHome];
     } else if (sscanf(line, "t %c %lf %lf", &phase, &x, &y) == 3 && phase && strchr("dmuc", phase) && isfinite(x) && isfinite(y)) {
@@ -518,7 +532,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     }
 }
 
-/** Standard input carries `k`, `s <id> <quiet-ms> <budget-ms>`, `home`, and `t <d|m|u|c> <x> <y>`. */
+/** Standard input carries recovery, settling, acknowledged taps, Home, and paced touches. */
 - (void)readCommands {
     __weak SimulatorStream *weakSelf = self;
     [NSThread detachNewThreadWithBlock:^{
