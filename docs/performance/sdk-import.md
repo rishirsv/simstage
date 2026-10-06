@@ -23,3 +23,10 @@ journeys are measured separately; they do not establish Codex-host latency.
 
 Reproduction and raw samples are retained locally in
 `artifacts/performance/ui/bundle-experiment.mjs` and `bundle-experiment.json`.
+
+The full live journey ran 30 actions in each transport, with no protocol errors.
+Pointer-to-visible-change p75 was 80.8 ms in preview and 78.0 ms in the reference
+MCP host. Connection trials remained backend-dominated (17.01 s and 33.06 s).
+Action p75 ranged from 1.59 s to 2.39 s, versus 1.51 s to 1.61 s in the earlier
+baseline run. These ordered runs are diagnostics, not causal SDK comparisons;
+the PR makes no connection or agent-action performance claim.
