@@ -777,7 +777,14 @@ test('video downsizing waits for sustained shrink and cancels a rebound before r
     assert.equal(shrinkTimers().length, 0, 'a rebound cancels pending shrink');
     screen.rect.height = 560; resized();
     const timer = [...timers].find(([, timer]) => timer.delay === 500)!;
+    const down = Object.assign(new Event("pointerdown", { cancelable: true }), { pointerId: 7, button: 0, clientX: 100, clientY: 100 });
+    frame.dispatchEvent(down);
+    assert.equal(frame.hasPointerCapture(7), true);
     timers.delete(timer[0]); timer[1].callback(); await flush();
+    assert.equal(sockets[0]!.closes, 0, "a held pointer keeps its current stream");
+    frame.dispatchEvent(Object.assign(new Event("pointercancel"), { pointerId: 7 }));
+    const deferred = [...timers].find(([, timer]) => timer.delay === 500)!;
+    timers.delete(deferred[0]); deferred[1].callback(); await flush();
     assert.equal(sockets[0]!.closes, 1);
     assert.equal(requests.at(-1), 576);
     mounted.dispose();
