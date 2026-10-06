@@ -26,6 +26,8 @@ export interface VideoBatch {
   sequence: number;
   /** Native capture Unix milliseconds are compared only on this server. */
   frames: Array<{ id: number; capturedAtUnixMs: number; ageMs: number; data: string }>;
+  /** Monotonic time waiting for frames, excluding serialization and delivery. */
+  waitMs?: number;
   active: true;
   /** Device actions since the previous batch, added by the hub. */
   activity?: DeviceActivity[];
@@ -108,7 +110,7 @@ interface Channel {
   settles: Map<number, { resolve: (quiet: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>;
 }
 interface Ticket { sessionId: string; deviceId: string; format: VideoCodec; maxDimension?: number; url: string; timer: ReturnType<typeof setTimeout> }
-interface PendingRead { resolve: (batch: VideoBatch) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+interface PendingRead { startedAt: number; resolve: (batch: VideoBatch) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 interface Relay {
   format: VideoCodec;
   sessionId: string;
@@ -224,12 +226,12 @@ export class SimulatorVideo {
     if (current.waitingForKey) this.requestKeyframe(current.channel);
     return new Promise<VideoBatch>((resolve, reject) => {
       const read: PendingRead = {
-        resolve, reject,
+        startedAt: performance.now(), resolve, reject,
         timer: setTimeout(() => {
           const index = current.reads.indexOf(read);
           if (index < 0) return;
           current.reads.splice(index, 1);
-          resolve(this.batch(current, []));
+          resolve({ ...this.batch(current, []), waitMs: performance.now() - read.startedAt });
         }, READ_WAIT_MS),
       };
       current.reads.push(read);
@@ -281,10 +283,11 @@ export class SimulatorVideo {
     if (!relay.frames.length || !relay.reads.length) return;
     const read = relay.reads.shift()!;
     clearTimeout(read.timer);
+    const waitMs = performance.now() - read.startedAt;
     const frames = relay.frames.map(frame => ({ id: frame.id, capturedAtUnixMs: frame.capturedAtUnixMs, ageMs: Math.max(0, Date.now() - frame.capturedAtUnixMs), data: frame.data.toString("base64") }));
     relay.frames = [];
     relay.bytes = 0;
-    read.resolve(this.batch(relay, frames));
+    read.resolve({ ...this.batch(relay, frames), waitMs });
   }
 
   private deliver(relay: Relay, unit: NativeVideoFrame, key: boolean) {

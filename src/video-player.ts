@@ -12,7 +12,7 @@ export interface SimulatorStream {
 
 /** Server age plus conservative RPC elapsed; the browser adds only its local monotonic elapsed. */
 export interface SimulatorVideoFrame { id: number; capturedAtUnixMs: number; ageMs: number; data: Uint8Array }
-export interface VideoMilestone { phase: "received" | "decode-start" | "decode" | "draw" | "present"; id: number; capturedAtUnixMs: number; ageMs: number; at: number }
+export interface VideoMilestone { phase: "received" | "decode-start" | "decode" | "draw" | "present" | "stale-drop" | "reset" | "keyframe-request"; id: number; capturedAtUnixMs: number; ageMs: number; at: number }
 
 export interface SimulatorVideoTransport {
   /** One item is one Annex B access unit; reads wait for a bounded video batch. */
@@ -150,10 +150,10 @@ export class SimulatorVideoPlayer {
         const receivedAt = performance.now();
         for (const frame of frames) {
           if (this.stopped) return;
-          if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(); break; }
+          if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(true, { frame, receivedAt }); break; }
           if (this.decoder!.decodeQueueSize >= 4) await this.waitForDecoder(frame, receivedAt);
           if (this.stopped) return;
-          if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(); break; }
+          if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(true, { frame, receivedAt }); break; }
           this.decode(frame, receivedAt);
         }
       }
@@ -162,7 +162,13 @@ export class SimulatorVideoPlayer {
 
   private age(frame: SimulatorVideoFrame, receivedAt: number) { return frame.ageMs + performance.now() - receivedAt; }
 
-  private resetChain(requestKeyframe = true) {
+  private resetChain(requestKeyframe = true, stale?: { frame: SimulatorVideoFrame; receivedAt: number }) {
+    if (stale) this.record("stale-drop", stale.frame, stale.receivedAt);
+    const tracked = stale ?? (this.latestFrame && { frame: this.latestFrame.metadata!, receivedAt: this.latestFrame.receivedAt });
+    if (tracked?.frame) {
+      this.record("reset", tracked.frame, tracked.receivedAt);
+      if (requestKeyframe) this.record("keyframe-request", tracked.frame, tracked.receivedAt);
+    }
     if (this.decoder!.state === "configured") this.decoder!.reset();
     this.metadata.clear();
     this.latestFrame?.frame.close();
@@ -202,7 +208,7 @@ export class SimulatorVideoPlayer {
     const { frame, metadata, receivedAt } = latest;
     try {
       if (this.stopped) return;
-      if (metadata && this.age(metadata, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(); this.resumeDecode?.(); return; }
+      if (metadata && this.age(metadata, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(true, { frame: metadata, receivedAt }); this.resumeDecode?.(); return; }
       if (this.canvas.width !== frame.displayWidth || this.canvas.height !== frame.displayHeight) {
         this.canvas.width = frame.displayWidth;
         this.canvas.height = frame.displayHeight;
@@ -225,7 +231,7 @@ export class SimulatorVideoPlayer {
   private decode(frame: SimulatorVideoFrame, receivedAt: number) {
     const data = frame.data;
     this.record("received", frame, receivedAt);
-    if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(); return; }
+    if (this.age(frame, receivedAt) > VIDEO_MAX_FRAME_AGE_MS) { this.resetChain(true, { frame, receivedAt }); return; }
     const decoder = this.decoder!;
     const unit = inspectVideoAccessUnit(data, this.stream.format ?? "h264");
     if (!unit.hasPicture) return;

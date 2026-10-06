@@ -1,4 +1,5 @@
 import { App } from "@modelcontextprotocol/ext-apps";
+import { deliveryBoundMs, VideoMetrics } from "./video-metrics.js";
 import { version } from "./version.js";
 import { applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps/app-with-deps";
 import { OpenAIExtensions, OPENAI_MODEL_CONTEXT_KEY } from "@openai/mcp-extensions/app";
@@ -12,6 +13,9 @@ type ToolResult = Awaited<ReturnType<App["callServerTool"]>>;
 const resultData = (result: ToolResult) => (result._meta?.[DATA_META_KEY] ?? result.structuredContent) as Record<string, unknown> | undefined;
 type ScreenImage = { type: "image"; data: string; mimeType: "image/png" | "image/jpeg" };
 type PreviewWindow = Window & { __SIM_STAGE_PREVIEW__?: boolean };
+
+const videoMetrics = new VideoMetrics();
+export const getVideoDiagnostics = () => videoMetrics.snapshot();
 
 let preview = false;
 let useVideoRelay = true;
@@ -276,14 +280,14 @@ function videoTransport(stream: SimulatorStream): SimulatorVideoTransport {
       const started = performance.now();
       const result = await callTool("device_stream_read", { sessionId: stream.sessionId, streamId: stream.streamId, ...(recover ? { recover: true } : {}) });
       if (stopped) return [];
-      const batch = result._meta?.["sim-stage/video"] as { sessionId?: string; streamId?: string; sequence?: unknown; frames?: unknown; active?: boolean; activity?: unknown; focus?: DeviceFocus } | undefined;
+      const batch = result._meta?.["sim-stage/video"] as { sessionId?: string; streamId?: string; sequence?: unknown; waitMs?: unknown; frames?: unknown; active?: boolean; activity?: unknown; focus?: DeviceFocus } | undefined;
       if (!batch || batch.sessionId !== stream.sessionId || batch.streamId !== stream.streamId || batch.active !== true || !Array.isArray(batch.frames) || !batch.frames.every(frame => typeof frame === "object" && frame !== null && Number.isInteger(frame.id) && Number.isFinite(frame.capturedAtUnixMs) && Number.isFinite(frame.ageMs) && typeof frame.data === "string")) throw new Error("Sim Stage returned an incomplete video batch.");
       // A lost or repeated batch breaks the decoder's reference chain.
       if (batch.sequence !== sequence) throw new Error("Sim Stage video batches arrived out of order.");
       sequence++;
       if (Array.isArray(batch.activity)) receiveActivity(stream.sessionId, batch.activity);
       followFocus(batch.focus);
-      return (batch.frames as { id: number; capturedAtUnixMs: number; ageMs: number; data: string }[]).map(frame => ({ ...frame, ageMs: frame.ageMs + performance.now() - started, data: decodeBase64(frame.data) }));
+      return (batch.frames as { id: number; capturedAtUnixMs: number; ageMs: number; data: string }[]).map(frame => ({ ...frame, ageMs: frame.ageMs + deliveryBoundMs(performance.now() - started, batch.waitMs), data: decodeBase64(frame.data) }));
     },
     stop() {
       if (stopped) return;
@@ -372,7 +376,7 @@ async function startVideo() {
       if (firstFrame || capture && !coordinateSpaceMatchesFrame(capture.coordinateSpace, dimensions)) refreshVideoCoordinates();
     }, error => {
       if (generation === videoGeneration) failVideo(error, current.id, format);
-    }, transport);
+    }, transport, event => videoMetrics.record(event));
     videoPlayer = player;
     videoStarting = false;
     player.start();
