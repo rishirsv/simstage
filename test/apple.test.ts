@@ -1070,3 +1070,37 @@ test('concurrent status calls share in-flight discovery and later calls discover
   assert.equal(f.commands.filter(args => args[0] === 'simctl').length, 2);
   assert.equal(f.commands.filter(args => args[0] === 'devicectl').length, 2);
 });
+
+for (const staleFinishesFirst of [true, false]) test(`creation bypasses pending discovery (${staleFinishesFirst ? 'old' : 'new'} snapshot completes first)`, async t => {
+  const f = await fixture(t);
+  const created = '6F0C1B2A-0000-4000-8000-000000000001';
+  const queries: Array<(value: string) => void> = [];
+  let freshStarted!: () => void;
+  const fresh = new Promise<void>(resolve => { freshStarted = resolve; });
+  f.setCommandHook(async args => {
+    if (args[0] !== 'simctl') return undefined;
+    if (args[1] === 'list' && args[2] === 'runtimes') return runtimesList;
+    if (args[1] === 'create') return created;
+    if (args[1] === 'list') return new Promise<string>(resolve => {
+      queries.push(resolve);
+      if (queries.length === 2) freshStarted();
+    });
+    return undefined;
+  });
+  const oldStatus = f.hub.status();
+  const creating = f.hub.createSimulator({ deviceType: 'iPhone 17 Pro' });
+  await fresh;
+  if (staleFinishesFirst) {
+    queries[0]!(simulatorList);
+    await oldStatus;
+  }
+  const joined = f.hub.status();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queries.length, 2, 'old completion must not clear the fresh in-flight query');
+  queries[1]!(JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-2': [simulator, { ...simulator, udid: created }] } }));
+  const device = await creating;
+  assert.deepEqual([device.id, device.createdByHub], [created, true]);
+  assert.ok((await joined).devices.some(device => device.id === created));
+  if (!staleFinishesFirst) { queries[0]!(simulatorList); await oldStatus; }
+  assert.ok((Reflect.get(f.hub, 'knownSimulatorIds') as Set<string>).has(created), 'late old results must not overwrite fresh identities');
+});
