@@ -1,7 +1,7 @@
 import { App } from "@modelcontextprotocol/ext-apps";
 import { deliveryBoundMs, VideoMetrics } from "./video-metrics.js";
 import { version } from "./version.js";
-import { applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps/app-with-deps";
+import { applyDocumentTheme, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
 import { OpenAIExtensions, OPENAI_MODEL_CONTEXT_KEY } from "@openai/mcp-extensions/app";
 import { DATA_META_KEY, HIERARCHY_META_KEY, sessionSchema, type CaptureState, type DeviceAction, type DeviceActivity, type DeviceFocus, type DeviceSettings, type HubState, type LiveInput, type Session } from "./shared.js";
 import { screenToDevicePoint } from "./screen-mapping.js";
