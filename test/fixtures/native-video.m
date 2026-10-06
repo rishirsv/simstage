@@ -64,6 +64,28 @@ int main(int argc, char **argv) {
         SimulatorStreamFixture *stream = [SimulatorStreamFixture new];
         NSString *mode = @(argv[1]);
         int headerLength = atoi(argv[2]);
+        if ([mode isEqualToString:@"image-conversion"]) {
+            NSString *input = [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSUUID UUID].UUIDString stringByAppendingString:@".png"]];
+            NSString *output = [input stringByAppendingString:@".jpg"];
+            CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            CGContextRef context = CGBitmapContextCreate(NULL, 1024, 512, 8, 0, space, kCGImageAlphaPremultipliedLast);
+            CGContextSetRGBFillColor(context, 1, 0, 0, 1);
+            CGContextFillRect(context, CGRectMake(0, 0, 1024, 512));
+            CGImageRef image = CGBitmapContextCreateImage(context);
+            CGImageDestinationRef source = CGImageDestinationCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:input], CFSTR("public.png"), 1, NULL);
+            CGImageDestinationAddImage(source, image, NULL);
+            if (!CGImageDestinationFinalize(source)) return 1;
+            CFRelease(source); CGImageRelease(image); CGContextRelease(context); CGColorSpaceRelease(space);
+            int result = convertImage(input, output, 128);
+            CGImageSourceRef converted = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:output], NULL);
+            CGImageRef decoded = converted ? CGImageSourceCreateImageAtIndex(converted, 0, NULL) : NULL;
+            if (result || !decoded || CGImageGetWidth(decoded) != 128 || CGImageGetHeight(decoded) != 64) return 1;
+            CGImageRelease(decoded); CFRelease(converted);
+            if (convertImage(@"/does-not-exist", output, 128) == 0) return 1;
+            [[NSFileManager defaultManager] removeItemAtPath:input error:NULL];
+            [[NSFileManager defaultManager] removeItemAtPath:output error:NULL];
+            return 0;
+        }
         if ([mode hasPrefix:@"settle-"]) {
             dispatch_sync([stream fixtureQueue], ^{
                 uint64_t started = mach_absolute_time();
