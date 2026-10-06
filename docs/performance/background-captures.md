@@ -22,6 +22,11 @@ queue-wait saving when a refresh does not collide with an action. An already
 executing bridge capture cannot be preempted by this policy.
 
 Focused hub, MCP and viewer validation covers freshness, timestamp preservation,
-explicit refreshes, continuous animations and live-input races. Reproduction and
-raw samples remain in `artifacts/performance/implementation/background-benchmark.ts`
-and `background-results.json`.
+explicit refreshes, continuous animations and live-input races. The original
+investigation referenced `artifacts/performance/implementation/background-benchmark.ts`
+and `background-results.json`, but neither file is included in this repository.
+The table above records previously reported local measurements; those numbers
+cannot be audited or reproduced from a fresh checkout. They are not validated
+performance acceptance evidence. Retain the original script and raw samples in
+a tracked location, or rerun the experiment on macOS with a real simulator and
+commit that evidence before relying on these figures for acceptance.
