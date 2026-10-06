@@ -5,9 +5,24 @@
 
 @interface SimulatorStreamFixture : SimulatorStream
 - (dispatch_queue_t)fixtureQueue;
+- (OSType)poolFormatWithWidth:(size_t)width height:(size_t)height orientation:(uint32_t)value hevc:(BOOL)hevc;
 @end
 @implementation SimulatorStreamFixture
 - (dispatch_queue_t)fixtureQueue { return queue; }
+- (OSType)poolFormatWithWidth:(size_t)width height:(size_t)height orientation:(uint32_t)value hevc:(BOOL)hevc {
+    if (!latestBuffer) {
+        if (CVPixelBufferCreate(NULL, 64, 128, kCVPixelFormatType_32BGRA, NULL, &latestBuffer)) return 0;
+        colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    }
+    orientation = value;
+    codecType = hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
+    if (![self configureEncoderWithWidth:width height:height]) return 0;
+    CVPixelBufferRef buffer = NULL;
+    if (CVPixelBufferPoolCreatePixelBuffer(NULL, VTCompressionSessionGetPixelBufferPool(compression), &buffer)) return 0;
+    OSType format = CVPixelBufferGetPixelFormatType(buffer);
+    CVPixelBufferRelease(buffer);
+    return format;
+}
 - (instancetype)init {
     if ((self = [super init])) {
         encoderPermit = dispatch_semaphore_create(0);
@@ -64,6 +79,14 @@ int main(int argc, char **argv) {
         SimulatorStreamFixture *stream = [SimulatorStreamFixture new];
         NSString *mode = @(argv[1]);
         int headerLength = atoi(argv[2]);
+        if ([mode isEqualToString:@"encoder-pool"]) {
+            if ([stream poolFormatWithWidth:64 height:128 orientation:1 hevc:YES] != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) return 1;
+            if ([stream poolFormatWithWidth:32 height:64 orientation:1 hevc:YES] != kCVPixelFormatType_32BGRA) return 1;
+            if ([stream poolFormatWithWidth:128 height:64 orientation:3 hevc:YES] != kCVPixelFormatType_32BGRA) return 1;
+            if ([stream poolFormatWithWidth:64 height:128 orientation:1 hevc:NO] != kCVPixelFormatType_32BGRA) return 1;
+            [stream stop];
+            return 0;
+        }
         if ([mode hasPrefix:@"settle-"]) {
             dispatch_sync([stream fixtureQueue], ^{
                 uint64_t started = mach_absolute_time();
