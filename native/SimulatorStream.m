@@ -171,6 +171,8 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
 - (void)stop;
 @end
 
+static BOOL observeOnly = NO;
+
 @implementation SimulatorStream
 
 - (BOOL)startWithUDID:(NSString *)udid developerDirectory:(NSString *)developer maxDimension:(NSInteger)maximum maxFPS:(double)fps codecType:(CMVideoCodecType)type {
@@ -204,11 +206,12 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
     if (!screen || ![screen respondsToSelector:sel_registerName("registerScreenCallbacksWithUUID:callbackQueue:frameCallback:surfacesChangedCallback:propertiesChangedCallback:")]) {
         fail(@"CoreSimulator did not expose a live primary screen."); return NO;
     }
-    [self prepareInputWithDeveloperDirectory:developer];
+    if (observeOnly) inputQueue = dispatch_queue_create("sim-stage.observer-commands", DISPATCH_QUEUE_SERIAL);
+    else [self prepareInputWithDeveloperDirectory:developer];
     maxDimension = maximum;
     orientation = 1;
-    imageContext = [CIContext contextWithOptions:@{ kCIContextCacheIntermediates: @NO }];
-    colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    if (!observeOnly) imageContext = [CIContext contextWithOptions:@{ kCIContextCacheIntermediates: @NO }];
+    if (!observeOnly) colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     queue = dispatch_queue_create("sim-stage.simulator-video", DISPATCH_QUEUE_SERIAL);
     encoderPermit = dispatch_semaphore_create(2);
     registration = [NSUUID UUID];
@@ -264,6 +267,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
 
 - (void)receiveSurface:(IOSurfaceRef)surface {
     lastDamageAt = mach_absolute_time();
+    if (observeOnly) return;
     if (latestBuffer) { CVPixelBufferRelease(latestBuffer); latestBuffer = nil; }
     if (!surface || stopping) return;
     OSStatus status = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, (__bridge CFDictionaryRef)@{ (id)kCVPixelBufferMetalCompatibilityKey: @YES }, &latestBuffer);
@@ -280,6 +284,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
 }
 
 - (void)idleRefresh {
+    if (observeOnly) return;
     if (stopping) return;
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     if (!latestBuffer) {
@@ -314,7 +319,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
 }
 
 - (void)encodeLatestFrame {
-    if (stopping || !latestBuffer || !attached) return;
+    if (observeOnly || stopping || !latestBuffer || !attached) return;
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     CFAbsoluteTime earliest = lastEncodedAt + 1.0 / maxFPS;
     if (now < earliest) {
@@ -544,6 +549,7 @@ static void compressedFrame(void *context, void *sourceContext, OSStatus status,
             char *command = line;
             dispatch_sync(strongSelf->inputQueue, ^{ if (!stopping) [strongSelf command:command]; });
         }
+        if (observeOnly) stopping = 1;
     }];
 }
 
@@ -594,6 +600,7 @@ int main(int argc, char **argv) {
                 else if (![name isEqualToString:@"h264"]) { fail(@"Codec must be hevc or h264."); return 2; }
             }
             else if ([argument isEqualToString:@"--max-dimension"] && index + 1 < argc) { maximum = [@(argv[++index]) integerValue]; if (maximum < 2) { fail(@"Maximum dimension must be at least 2 pixels."); return 2; } }
+            else if ([argument isEqualToString:@"--observe-only"]) observeOnly = YES;
             else if ([argument isEqualToString:@"--max-fps"] && index + 1 < argc) { fps = [@(argv[++index]) doubleValue]; if (!(fps >= 1 && fps <= 240)) { fail(@"Maximum frame rate must be between 1 and 240."); return 2; } }
             else { fail([NSString stringWithFormat:@"Unknown or incomplete argument: %@", argument]); return 2; }
         }
