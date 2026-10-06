@@ -24,8 +24,8 @@ is authorized by this roadmap. Priorities below are sequencing, not forecasts.
    clean uninstall and unchanged original dev installation. Run Node 22/24 CI.
 4. **Release gate.** Keep automatic publishing absent until authorized. Add a
    strict readiness validator distinct from runtime package verification:
-   inspect every hidden manifest and final ZIP; reject app bindings/root .app.json,
-   escaping paths, missing files, incomplete required listing fields, non-PNG
+   inspect every hidden manifest and final ZIP; reject app bindings/root .app.json/lifecycle hooks,
+   escaping paths, missing files, incomplete required listing fields, invalid
    icons, missing URLs/demo and inconsistent versions. Acceptance: deliberately
    broken fixture packages fail for useful reasons; authorized complete archive
    passes, with remote URL/playback verification recorded separately.
@@ -35,10 +35,11 @@ is authorized by this roadmap. Priorities below are sequencing, not forecasts.
 | Work | Acceptance / evidence |
 | --- | --- |
 | Shared-session registry hardening | Multi-process contention, suspended lock owner, crash/restart, PID reuse, malformed file, directory permission and orphan cleanup tests. No lost holders or ending another process's active session. Use one small owner-aware lock mechanism; avoid a new service unless evidence requires it. |
+| Tool contract and UI declarations | Resolve device_capture read-only vs preference-mutation mismatch; validate output schemas, resource CSP/domain and widget origin against the approved host route. Metadata is not a secret store. |
 | Threat model and adversarial checks | Explicit local user/host trust boundary; wrong session/device/stream, stale ref after queued navigation, forged cache, cross-origin preview, leaked/revoked token, slow reader, malformed native packets and cancellation tests. Any hosted future variant authenticates before lookup and binds all resources to identity. |
 | Privacy/support diagnostics | Keep screen data out of logs by default; redact session keys/device IDs/local paths in error/support exports. Document cache retention and deletion, abnormal temp residue and host metadata egress. Prove export with fake sensitive markers and explicit user preview. |
 | Dependency/release trust | Fresh lockfile install, dependency vulnerability review, complete notices/SBOM, reproducible archive inventory and checksums; determine Developer ID/notarization requirements. No install-time unreviewed execution or shared credentials. |
-| Listing and real demo | Confirm four public HTTPS URLs, PNG 256+ logo and 48+ composer icon, publisher/countries/commerce, actual recording URL and legal attestations. Validate content and playback, not HTTP status alone. Missing fields stay absent until confirmed. |
+| Listing and real demo | Confirm four public HTTPS URLs, valid legible square icon assets (existing 64×64 SVG is permitted; larger PNG is optional), publisher/countries/commerce, actual recording URL and legal attestations. Validate content and playback, not HTTP status alone. Missing fields stay absent until confirmed. |
 | Reviewer cases | Rehearse five distinct positive and three true out-of-capability negative cases on sample device data, plus stale-snapshot/error tests separately. Record calls, arguments, returned evidence and pass/fail/blocked. No fixture pass substituted for host acceptance. |
 | Compatibility and accessibility | Matrix of Xcode/macOS/Node/host versions, simulator rotation and physical-device eligibility; HEVC→H.264→stills failures recover visibly. Keyboard, screen-reader labels, focus, narrow panel, reduced motion and dark/high contrast checked in actual viewer. |
 
@@ -96,3 +97,8 @@ Ready for submission only when P0 and review-critical P1 evidence is complete,
 final ZIP and exact saved portal version are checked, the owner supplies legal
 and publisher decisions, and the approved local route has real reviewer proof.
 Ready for public release only after separate explicit owner authorization.
+
+If contributing to `openai/community-plugins`, separately satisfy its catalog,
+root `test:<name>` suite, marketplace validation, CODEOWNERS, contributor CLA
+and private vulnerability-reporting requirements. No upstream contribution is
+authorized merely by this private migration.

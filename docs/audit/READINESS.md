@@ -27,7 +27,7 @@ portal behavior and the local-MCP route still require confirmation.
 | P1 fixed | Extracted-package verifier rejected valid global entrypoint | Imported verifiers expected settings/thread while `src/mcp.ts` and discovery test expose global/settings/thread. Both assertions corrected; extracted archive checks now pass. |
 | P1 fixed | Inherited staging workflow could publish publicly | Removed `.github/workflows/publish.yml`. No tag, publish script or package upload executed. CI remains read-only apart from artifact storage. |
 | P1 | Shared-file coordination needs stress/fault tests | Registry reaps a lock by age >2 s or retry count; a paused holder may still be updating. PID reuse and malformed local state need adversarial coverage. This is a source-grounded race hypothesis, not a reproduced corruption. |
-| P1 | Required review/listing materials incomplete | Missing terms URL, PNG listing/composer icons (only SVG exists), verified demo recording, confirmed countries, publisher verification and legal attestations. Existing website/support/privacy URLs refer to upstream and were not verified as this staging publisher's pages. |
+| P1 | Required review/listing materials incomplete | Missing terms URL, verified demo recording, confirmed countries, publisher verification and legal attestations. Current official docs allow square SVG; existing 64×64 SVG is within documented dimensional/format limits, with visual/portal verification still needed. Existing website/support/privacy URLs refer to upstream and were not verified as this staging publisher's pages. |
 | P1 | Signing/compatibility acceptance incomplete | Native helper uses private CoreSimulator/SimulatorKit APIs and ad-hoc signing. Compilation and signature verification pass; Developer ID/notarization requirements and Xcode/macOS compatibility need approved-route evidence. |
 | P2 | Reviewer runbook had stale version/tool count | Corrected to 22 tools for this 0.1.3 source snapshot. Older validation/release prose is historical; do not use as fresh acceptance evidence. |
 
@@ -50,6 +50,11 @@ portal behavior and the local-MCP route still require confirmation.
   the same local user. A hosted design would need identity established before
   lookup and user-bound device/session/stream authorization; none is claimed.
 - All 22 tools emit explicit boolean read-only/destructive/open-world hints.
+  A confirmed mismatch remains: `device_capture` advertises read-only while its
+  default `updateAccessibilityPreference: true` path updates the viewer preference
+  (`src/apple.ts` capture). Before review, separate observation from preference
+  mutation or classify the mutating contract honestly; no runtime change was made
+  in this audit.
   Boot/create/session operations are writes; delete/settings/input describe
   effects; arbitrary-app input is open-world/destructive. `simulator_scroll`
   remains a non-destructive local scroll operation. Annotations are guidance,
@@ -64,6 +69,10 @@ portal behavior and the local-MCP route still require confirmation.
   on JSON POST. Origin-less local clients are allowed. No authenticated preview
   principal exists. Preview is development-only; production uses host MCP.
   Exact host CSP enforcement and cross-origin iframe behavior were not tested.
+  `src/mcp.ts` registers no explicit outputSchema, resource CSP/domain declaration;
+  host defaults may constrain it, but declared contract/origin/network allowlist
+  requirements need approved-route validation. Component-only metadata is not a
+  secret vault.
 - Raw hierarchy and video travel in host metadata; stills/text can enter model
   context. No publisher telemetry/backend was found. Host egress/retention is
   governed by host policy, not proven local-only. Temporary files are normally
@@ -116,3 +125,18 @@ baseline was measured. `scripts/interaction-benchmark.mjs` times the first frame
 after input, which may be unrelated to the action; it cannot establish causal
 input-to-photon latency without visual/frame markers. Historic latency numbers
 are not new migration results. No speedup is claimed.
+
+## Official-checklist cross-check
+
+Current official docs accept square PNG/JPEG/WebP/SVG (48×48 minimum, ≤5 MiB);
+PNG 256×256 is a conservative optional preparation choice, not a universal
+requirement. Starter screenshots are optional and currently not displayed in
+the Directory. Public upload validation also rejects lifecycle hooks in addition
+to existing apps/.app.json bindings. Source manifests here define neither.
+
+If the chosen route is `openai/community-plugins`, add that repository's root
+`test:<name>` master suite/catalog entry, marketplace checks, CODEOWNERS/CLA
+evidence and private vulnerability reporting route. These are route-specific
+and were not performed for this private own-repository migration. Rights to
+Apple branding/private APIs remain a publisher/platform decision; no claim of
+Apple entitlement or legal compliance is established by successful compilation.
