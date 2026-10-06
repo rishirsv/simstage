@@ -1068,6 +1068,7 @@ function resetAttachment() {
 /** The mounted surface owns this attachment, including host setup and cleanup. */
 export function initializeViewer(nodes: { root: HTMLElement; screen: HTMLImageElement; canvas: HTMLCanvasElement; frame: HTMLElement; gesture: HTMLElement }) {
   disposeAttachment?.();
+  Object.assign(window, { __SIM_STAGE_VIDEO_DIAGNOSTICS__: getVideoDiagnostics });
   const attached = ++attachment;
   lifecycle++;
   frameGeneration++;
