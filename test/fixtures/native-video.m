@@ -20,6 +20,34 @@
 }
 @end
 
+static IndigoMessage *fixtureMouse(CGPoint *location, CGPoint *windowLocation, uint32_t target, NSUInteger eventType, CGSize displaySize, uint32_t edge) {
+    return calloc(1, sizeof(IndigoMessage));
+}
+
+@interface TouchReleaseFixture : SimulatorStream
+@property(nonatomic) NSArray<NSNumber *> *deliveries;
+@property(nonatomic) NSUInteger attempts;
+- (BOOL)hasTouch;
+@end
+@implementation TouchReleaseFixture
+- (instancetype)init {
+    if ((self = [super init])) {
+        hidClient = [NSObject new];
+        mouseMessage = fixtureMouse;
+        inputQueue = dispatch_queue_create("touch-fixture", DISPATCH_QUEUE_SERIAL);
+        atomic_store(&surfaceWidth, 440);
+        atomic_store(&surfaceHeight, 956);
+    }
+    return self;
+}
+- (BOOL)sendHID:(IndigoMessage *)message {
+    free(message);
+    NSUInteger index = self.attempts++;
+    return index < self.deliveries.count && self.deliveries[index].boolValue;
+}
+- (BOOL)hasTouch { return touching; }
+@end
+
 static CMSampleBufferRef makeSample(int headerLength, uint8_t marker, size_t payloadLength, BOOL notSync, BOOL truncated, BOOL hevc) {
     // SPS and PPS from the checked-in simulator-video validation sample.
     const uint8_t sps[] = { 39, 66, 0, 50, 171, 64, 41, 128, 180, 242, 206, 128 };
@@ -64,7 +92,19 @@ int main(int argc, char **argv) {
         SimulatorStreamFixture *stream = [SimulatorStreamFixture new];
         NSString *mode = @(argv[1]);
         int headerLength = atoi(argv[2]);
-        if ([mode hasPrefix:@"settle-"]) {
+        if ([mode hasPrefix:@"touch-"]) {
+            TouchReleaseFixture *touch = [TouchReleaseFixture new];
+            BOOL releaseFails = ![mode isEqualToString:@"touch-release-ok"];
+            BOOL downFails = [mode isEqualToString:@"touch-down-uncertain"];
+            touch.deliveries = @[@(!downFails), @(!releaseFails), @YES];
+            [touch command:"tap 17 0.25 0.5 1 0.05"];
+            if (touch.attempts != 2 || touch.hasTouch != releaseFails) return 3;
+            if ([mode isEqualToString:@"touch-release-retry"]) {
+                if (![touch touchPhase:'u' x:0.25 y:0.5] || touch.hasTouch) return 4;
+            }
+            [touch stop];
+            if (touch.hasTouch || touch.attempts != (releaseFails ? 3 : 2)) return 5;
+        } else if ([mode hasPrefix:@"settle-"]) {
             dispatch_sync([stream fixtureQueue], ^{
                 uint64_t started = mach_absolute_time();
                 mach_timebase_info_data_t base;
