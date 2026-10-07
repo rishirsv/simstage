@@ -994,7 +994,7 @@ export class AppleHub {
       if (options.settle ?? true) {
         const settling = session.public.device.kind === 'simulator' ? this.video.waitForIdle(sessionId) ?? this.observer?.waitForIdle(sessionId) : undefined;
         if (settling === undefined) await this.waitForIdle(session);
-        else await settling;
+        else await settling.catch(() => this.waitForIdle(session));
         observation = await synthesize('');
       }
       return this.captureResult(session, observation, options.accessibilityEnabled ?? session.public.accessibilityEnabled, options);
