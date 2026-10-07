@@ -9,7 +9,7 @@ const bundle = await build({ entryPoints:[`${root}/src/viewer-controller.ts`], b
     builder.onLoad({filter:/viewer-controller\.ts$/}, async ({path}) => ({contents: `${await readFile(path,'utf8')}\nexport { videoMaxDimension };`, loader:'ts'}));
   }
 }] });
-const browser = await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+const browser = await chromium.launch({executablePath:process.env.CHROME_PATH ?? (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/chromium'),headless:true,args:['--no-sandbox']});
 try {
  const page = await browser.newPage({deviceScaleFactor:1});
  await page.setContent(`<style>${await readFile(`${root}/src/app.css`,'utf8')}</style><div id="root"><div class="stage" style="width:700px;height:1000px"><div id="frame" class="screen-frame"><img id="screen" width="440" height="956"><canvas id="canvas" width="256" height="576"></canvas><div id="gesture"></div></div></div></div>`);

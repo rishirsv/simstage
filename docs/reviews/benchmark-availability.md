@@ -17,3 +17,11 @@ No code changed; no tests, native build, packaging or benchmark was run for this
 documentation correction. No measurement data was synthesized or reconstructed.
 The original measurements remain unverified. Original artifacts or a real
 simulator rerun are the concrete remaining blocker for performance acceptance.
+
+## macOS artifact recovery
+
+The original benchmark script and all 60 raw samples were found in this task's
+ignored local artifacts. Their original bytes are now tracked in
+`docs/performance/evidence/`, with the summary function and reproduction command.
+The fresh-checkout availability blocker above is resolved. No measurements
+were fabricated, reconstructed, or rerun for this correction.

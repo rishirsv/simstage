@@ -23,10 +23,12 @@ executing bridge capture cannot be preempted by this policy.
 
 Focused hub, MCP and viewer validation covers freshness, timestamp preservation,
 explicit refreshes, continuous animations and live-input races. The original
-investigation referenced `artifacts/performance/implementation/background-benchmark.ts`
-and `background-results.json`, but neither file is included in this repository.
-The table above records previously reported local measurements; those numbers
-cannot be audited or reproduced from a fresh checkout. They are not validated
-performance acceptance evidence. Retain the original script and raw samples in
-a tracked location, or rerun the experiment on macOS with a real simulator and
-commit that evidence before relying on these figures for acceptance.
+[benchmark script](evidence/background-benchmark.ts), [raw samples](evidence/background-results.json),
+and [summary function](evidence/statistics.ts) are retained with this report.
+The cloud review could not access the ignored local artifacts; retaining their
+original bytes resolves that availability gap without reconstructing measurements.
+
+On macOS with the Xcode bridge enabled, connect an expendable simulator and run
+`bun docs/performance/evidence/background-benchmark.ts DEVICE_ID` to reproduce
+this controlled collision experiment. It sends taps at (200, 300); prepare the
+same static fixture first. The script overwrites the result JSON beside it.
