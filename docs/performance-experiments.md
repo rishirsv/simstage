@@ -104,8 +104,11 @@ tracked under `docs/performance/evidence/`.
 Native/browser/server build, typecheck, all 165 tests, packing and isolated
 package verification pass. The real Chrome layout fixture measures 960 → 576 →
 960 despite fixed intrinsic canvas dimensions. Real simulator creation, clone,
-fresh discovery and ownership checks pass. No new performance percentages are
-claimed for these correctness fixes.
+fresh discovery and ownership checks pass. Real HTTP preview and reference MCP viewer smoke checks pass. Tap, double-tap,
+and hold advance the expected markers and reuse a quiet final observation.
+An injected real observer rejection after input returns a fresh Marker 1 with
+exactly one delivered tap. No new performance percentages are claimed for these
+correctness fixes.
 
 Release JS SHA-256: `cde1df405fb951708b221c30ffb87a86c218362a29f46d3b3dccd063e14717d6`.
 Release native helper SHA-256: `3c95fbf5de91d74f8b2c2858e498528f61b582e5c6533b8a7a373e2aa4016f27`.
