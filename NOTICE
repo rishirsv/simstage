@@ -1,0 +1,12 @@
+Sim Stage
+Maintained by Rishi Sharma.
+
+Derived from the Apple simulator plugin developed by Max Weinbach:
+https://github.com/mweinbach/AppleSimChatGPTPlugin
+
+Sim Stage is independent of Apple and OpenAI.
+Third-party libraries retain their own licenses and copyright notices.
+The bundled runtime includes THIRD_PARTY_NOTICES.txt.
+
+The UI includes shadcn-generated components and its 4.21.0 stylesheet.
+Copyright (c) 2023 shadcn. See src/styles/shadcn.LICENSE (MIT).

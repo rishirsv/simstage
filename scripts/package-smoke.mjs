@@ -14,6 +14,11 @@ export async function smokeArtifact({ name, version, command, args, cwd, additio
     await client.connect(transport, { timeout: 15_000 });
     assert.deepEqual(client.getServerVersion(), { name: "sim-stage", version });
     const { tools } = await client.listTools();
+    for (const tool of tools) {
+      for (const hint of ["readOnlyHint", "destructiveHint", "openWorldHint"]) {
+        assert.equal(typeof tool.annotations?.[hint], "boolean", `${tool.name} must declare ${hint}`);
+      }
+    }
     for (const required of [...requiredTools, ...additionalTools]) assert.ok(tools.some(tool => tool.name === required), `Missing required tool ${required}`);
     const opener = tools.find(tool => tool.name === "open_sim_stage");
     const settings = tools.find(tool => tool.name === "sim_stage_preferences");
@@ -24,6 +29,7 @@ export async function smokeArtifact({ name, version, command, args, cwd, additio
     const resource = await client.readResource({ uri: "ui://sim-stage/viewer" });
     const viewer = resource.contents.find(content => content.uri === "ui://sim-stage/viewer");
     assert.equal(viewer.mimeType, "text/html;profile=mcp-app");
+    assert.deepEqual(viewer._meta?.ui?.csp, { connectDomains: [], resourceDomains: [], frameDomains: [] });
     assert.match(viewer.text, /<main id="root"><\/main>/);
     const script = viewer.text.match(/<script type="module">([\s\S]+?)<\/script>/)?.[1];
     const style = viewer.text.match(/<style>([\s\S]+?)<\/style>/)?.[1];

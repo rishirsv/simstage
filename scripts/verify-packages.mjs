@@ -17,6 +17,9 @@ try {
   assert.equal(metadata.name, name);
   assert.equal(metadata.version, version);
   assert.ok(!metadata.dependencies, "Runtime dependencies must be bundled");
+  for (const file of ["LICENSE", "NOTICE"]) assert.deepEqual(await readFile(join(packageRoot, "dist", file)), await readFile(join(root, file)));
+  const notices = await readFile(join(packageRoot, "dist", "THIRD_PARTY_NOTICES.txt"), "utf8");
+  for (const name of ["@modelcontextprotocol/sdk@", "react@", "shadcn@", "tailwindcss@", "tw-animate-css@"]) assert.ok(notices.includes(name), `${name} license must ship`);
   const bin = join(packageRoot, metadata.bin[name]);
   assert.equal(execFileSync(bin, ["--version"], { cwd: directory, encoding: "utf8" }).trim(), version);
   assert.match(execFileSync(bin, ["--help"], { cwd: directory, encoding: "utf8" }), new RegExp(name));

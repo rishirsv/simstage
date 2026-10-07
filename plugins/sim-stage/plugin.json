@@ -1,15 +1,15 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "sim-stage",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "View and control local Apple simulators and connected devices through Xcode.",
   "author": {
-    "name": "Max Weinbach",
-    "url": "https://github.com/mweinbach"
+    "name": "Rishi Sharma",
+    "url": "https://github.com/rishirsv"
   },
-  "homepage": "https://github.com/mweinbach/AppleSimChatGPTPlugin",
-  "repository": "https://github.com/mweinbach/AppleSimChatGPTPlugin",
-  "license": "UNLICENSED",
+  "homepage": "https://github.com/rishirsv/simstage",
+  "repository": "https://github.com/rishirsv/simstage",
+  "license": "MIT",
   "keywords": [
     "Apple",
     "Xcode",
@@ -21,59 +21,63 @@
     "com.openai": {
       "interface": {
         "displayName": "Sim Stage",
-        "shortDescription": "Test Apple devices with Xcode",
-        "longDescription": "View and control Apple simulators and connected devices on your Mac. Inspect screenshots and accessibility elements, tap and type in a simulator, and test appearance, Dynamic Type, motion, transparency and contrast settings. The embedded viewer supports live simulator video with HEVC and H.264 fallback. Requires an Apple Silicon Mac, Node 22 or later, Xcode 27 with its MCP bridge enabled, and a desktop host with local MCP support. Physical-device interaction depends on Apple's pairing and eligibility checks. Device settings persist; actions in apps can change data or submit information. This independent plugin is developed by Max Weinbach and is not affiliated with Apple. It does not provide remote access to another person's devices or control the Mac desktop.",
-        "developerName": "Max Weinbach",
+        "shortDescription": "Inspect and control simulators",
+        "longDescription": "Bring your Apple simulator into the conversation. See the screen live, inspect accessibility elements, and tap, swipe or type using observed targets. Humans can drive the viewer while agents read the resulting screen. Compare light and dark appearance, Dynamic Type, motion, transparency and contrast settings. Create a fresh simulator or clone a shut-down one for a repeatable test setup.\n\nRuns locally on an Apple Silicon Mac with Bun 1.4.2 or later and Xcode 27 with its MCP bridge enabled. Requires a desktop host with local MCP support. Connected physical-device interaction depends on Apple pairing and eligibility checks. Device settings persist, and actions can change app data or submit information. Screenshots and element text returned to the assistant may include what is visible in the selected app.\n\nBased on the Apple simulator plugin developed by Max Weinbach. Independent of Apple and OpenAI.",
+        "developerName": "Rishi Sharma",
         "category": "Developer Tools",
         "capabilities": [
           "Interactive",
           "Read",
           "Write"
         ],
-        "websiteURL": "https://github.com/mweinbach/AppleSimChatGPTPlugin",
-        "supportURL": "https://github.com/mweinbach/AppleSimChatGPTPlugin/issues",
+        "websiteURL": "https://github.com/rishirsv/simstage",
+        "supportURL": "https://github.com/rishirsv/simstage/issues",
         "brandColor": "#3478F6",
         "brandColorDark": "#8CB4FF",
-        "logo": "./assets/icon.svg",
-        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/logo.png",
+        "composerIcon": "./assets/composer.png",
         "defaultPrompt": [
-          "Open Sim Stage and show my available simulators.",
-          "Inspect the current simulator screen and its accessibility elements.",
-          "Help me test light and dark appearance on an iPhone simulator."
-        ]
+          "Show my available Apple simulators in Sim Stage.",
+          "Open Settings on the selected simulator and inspect its controls.",
+          "Compare light and dark appearance, then restore the original setting."
+        ],
+        "logoDark": "./assets/logo-dark.png",
+        "composerIconDark": "./assets/composer-dark.png",
+        "privacyPolicyURL": "https://github.com/rishirsv/simstage/blob/main/PRIVACY.md",
+        "termsOfServiceURL": "https://github.com/rishirsv/simstage/blob/main/TERMS.md"
       },
       "review": {
         "test_cases": {
           "positive": [
             {
-              "description": "Open the viewer and discover local simulators",
+              "description": "Setup: open a new chat with this plugin enabled on an Apple Silicon Mac, Bun 1.4.2+, Xcode 27 open with its MCP bridge enabled, and an installed iOS runtime. Use a dedicated sample-data iPhone simulator named Sim Stage review. Discover devices without connecting.",
               "prompt": "Open Sim Stage and show my available simulators.",
               "tools_triggered": "open_sim_stage, sim_stage_status",
               "expected_behavior": "Open the embedded viewer and list actual local devices. Report discovery errors or unavailable devices without claiming a connection."
             },
             {
-              "description": "Connect and inspect a simulator",
-              "prompt": "Connect to my available iPhone simulator and inspect its screen and accessibility elements.",
+              "description": "Setup: use the dedicated Sim Stage review iPhone simulator from the inventory; leave it shut down to exercise boot. Do not select a personal device. Connect and inspect.",
+              "prompt": "Connect to the Sim Stage review iPhone simulator and show its screenshot and accessibility elements.",
               "tools_triggered": "sim_stage_status, device_connect, simulator_get_state",
-              "expected_behavior": "Use an inventory device ID, boot if needed, and return a screenshot, logical coordinate space, numbered elements and a snapshot for a simulator session."
+              "expected_behavior": "Use the inventory device ID with device_connect, boot if needed, and call simulator_get_state with that session ID and screenshot: \"always\". Return an actual image, logical coordinate space, numbered elements and a current snapshot. Report missing runtime or bridge access without fabricated results."
             },
             {
-              "description": "Navigate a simulator with observed elements",
+              "description": "Setup: connect to the dedicated Sim Stage review simulator. Settings is installed. Navigate with an observed element rather than guessed coordinates.",
               "prompt": "Open Settings on the connected simulator, then tap General using its current accessibility element.",
               "tools_triggered": "device_action, simulator_get_state, simulator_click",
-              "expected_behavior": "Open the device Settings app, observe it, target General using its current ref and snapshot, and show the resulting screen. No input reaches the Mac desktop."
+              "expected_behavior": "Use device_action with action.type: \"openSettings\", then simulator_get_state. Click General with the current element ref and matching snapshot; return the General screen. No input reaches the Mac desktop. If General is not visible, observe and scroll before clicking."
             },
             {
-              "description": "Compare appearance and restore the original setting",
+              "description": "Setup: connect to the dedicated Sim Stage review simulator and open Settings. Compare appearance, retaining its observed original value for restoration.",
               "prompt": "Capture the connected simulator in light and dark appearance, then restore its original appearance.",
               "tools_triggered": "device_capture, device_settings",
-              "expected_behavior": "Read the original appearance, apply supported light and dark changes, capture each result, and restore the known original value. Report an unsupported or unknown setting without inventing its value."
+              "expected_behavior": "Use device_settings with the settings argument omitted to read the original appearance. Apply appearance: \"light\" and \"dark\", and call device_capture with screenshot: \"always\" after each. Return both actual images and restore the known original appearance using device_settings. If the original value is unavailable, explain the limit before changing it."
             },
             {
-              "description": "Use live video and release the session",
+              "description": "Setup: connect to the dedicated Sim Stage review simulator with Settings open. Use the live viewer in the supported desktop host. Finish only after the user requests disconnection.",
               "prompt": "Show the connected simulator live in Sim Stage, then disconnect it when I am finished.",
               "tools_triggered": "open_sim_stage, device_disconnect",
-              "expected_behavior": "The viewer's app-only device_stream and device_stream_read calls display live video with H.264 fallback. Disconnect ends the session and its stream; video bytes remain outside model-visible tool content."
+              "expected_behavior": "Open the actual viewer. Its app-only device_stream and device_stream_read calls display live native video using a supported codec; video bytes stay outside model-visible tool content. After the user asks to finish, device_disconnect releases this server session and its stream. Other shared viewers retain their own sessions."
             }
           ],
           "negative": [
@@ -88,9 +92,9 @@
               "expected_behavior": "Explain that only locally discovered and eligible devices can connect. Do not invent remote device access or bypass Apple's pairing checks."
             },
             {
-              "description": "Stale element snapshot",
-              "prompt": "Tap element e12 using an old snapshot after the simulator screen has changed.",
-              "expected_behavior": "Reject stale simulator element references before input, observe the screen again, and identify the current target. Do not guess a replacement coordinate."
+              "description": "Android devices are outside the Apple-only device inventory. Explain the limit; do not invoke device_connect or synthesize Android input.",
+              "prompt": "Connect to my Android emulator and tap its Settings app.",
+              "expected_behavior": "Explain that Sim Stage supports Apple simulators and eligible connected Apple devices. Do not fabricate an Android device or call an Apple input tool for it."
             }
           ]
         },
@@ -98,7 +102,8 @@
         "commerce_description": "This plugin does not sell products or process payments. Device UI actions can interact with third-party apps at the user's direction."
       },
       "publication": {
-        "release_notes": "Adds the portable Agent Plugins manifest, directory listing and review cases, a CI-built plugin ZIP, and accurate tool annotations for stateful video and device input. Local MCP gallery distribution requires OpenAI partner review."
+        "countries": [],
+        "release_notes": "Adds a phone and focus identity with light/dark listing logos and transparent composer icons. Bundles an agent skill for observed simulator interaction, setting restoration and scoped cleanup. Corrects tool annotations, declares an embedded UI network policy, redacts secure-field text values, rejects typing into observed secure fields, and updates dependencies."
       }
     }
   }

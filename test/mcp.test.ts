@@ -83,6 +83,16 @@ test("model text lists elements while the raw hierarchy travels only in _meta fo
   assert.match((captureResult(frame(false)).content[0] as { text: string }).text, /elements are hidden/);
 });
 
+test("secure field values stay out of both model text and viewer metadata", () => {
+  const secret = "sample-secret-marker";
+  const hierarchy = `SecureTextField, {{10.0, 10.0}, {200.0, 40.0}}, label: 'Password', value: '${secret}', hitPoint: {110.0, 30.0}`;
+  const capture: Capture = { ...frame(), hierarchy, elements: [{ ref: "e1", role: "SecureTextField", label: "Password", value: secret, frame: { x: 10, y: 10, width: 200, height: 40 }, point: { x: 110, y: 30 } }] };
+  const result = captureResult(capture);
+  assert.equal(JSON.stringify(result).includes(secret), false);
+  assert.match(JSON.stringify(result), /Password/);
+  assert.match(JSON.stringify(result), /redacted/);
+});
+
 test("session tools explain to the model how each session was obtained and keep viewer data in _meta", async () => {
   const { hub, calls } = fakeHub();
   const connected = await callHubTool(hub, "device_connect", { deviceId: "simulator-one" });
@@ -206,7 +216,13 @@ test("MCP discovery advertises native host entrypoints and opening accepts empty
       assert.deepEqual((tools.find(tool => tool.name === name)!._meta?.ui as Record<string, unknown>).visibility, ["app"]);
     }
     const resource = await client.readResource({ uri: UI_URI });
-    assert.deepEqual(resource.contents[0]._meta?.ui, { prefersBorder: false });
+    assert.deepEqual(resource.contents[0]._meta?.ui, { prefersBorder: false, csp: { connectDomains: [], resourceDomains: [], frameDomains: [] } });
+    for (const name of ["device_capture", "device_connect", "simulator_scroll"]) {
+      const tool = tools.find(tool => tool.name === name)!;
+      assert.equal(tool.annotations?.readOnlyHint, false);
+      assert.equal(tool.annotations?.destructiveHint, true);
+      assert.equal(tool.annotations?.openWorldHint, name === "simulator_scroll");
+    }
     assert.deepEqual((tools.find(tool => tool.name === "device_capture")!._meta?.ui as Record<string, unknown>).visibility, ["app", "model"]);
     for (const name of ["simulator_get_state", "simulator_screenshot", "simulator_click", "simulator_drag", "simulator_scroll", "simulator_type_text", "simulator_press_key"]) {
       const tool = tools.find(tool => tool.name === name)!;

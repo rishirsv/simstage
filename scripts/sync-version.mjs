@@ -12,7 +12,7 @@ const manifest = JSON.parse(await readFile(new URL("../plugins/sim-stage/plugin.
 const { $schema, extensions, ...identity } = manifest;
 const { interface: presentation, ...openai } = extensions["com.openai"];
 await writeFile(new URL("../plugins/sim-stage/.codex-plugin/plugin.json", import.meta.url), JSON.stringify({
-  ...identity, interface: presentation, mcpServers: "./.mcp.json", extensions: { "com.openai": openai },
+  ...identity, interface: presentation, skills: "./skills/", mcpServers: "./.mcp.json", extensions: { "com.openai": openai },
 }, null, 2) + "\n");
 // A Git-installed plugin has no build output; it runs the published server of the same version.
 await writeLaunchManifests(new URL("../plugins/sim-stage/", import.meta.url), { command: "bun", args: ["x", "--bun", `sim-stage-mcp@${version}`] });

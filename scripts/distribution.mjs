@@ -14,9 +14,10 @@ export async function writeLaunchManifests(destination, server) {
 /** A distribution stage owns its copy; the checkout has one canonical runtime. */
 export async function stagePlugin(root, destination) {
   await mkdir(destination, { recursive: true });
-  for (const file of ["plugin.json", ".codex-plugin", "assets"]) {
+  for (const file of ["plugin.json", ".codex-plugin", "assets", "skills"]) {
     await cp(join(root, "plugins/sim-stage", file), join(destination, file), { recursive: true });
   }
   await cp(join(root, "packages/sim-stage-mcp/dist"), join(destination, "dist"), { recursive: true });
+  for (const file of ["LICENSE", "NOTICE"]) await cp(join(root, file), join(destination, file));
   await writeLaunchManifests(destination, { command: "bun", args: ["./dist/server.js"], cwd: "./" });
 }

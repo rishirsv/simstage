@@ -933,7 +933,7 @@ export class AppleHub {
       }
       const target = 'element' in action ? action.element : undefined;
       if (target?.ref && options.snapshot === undefined) throw new Error('Element refs require the snapshot from the current observation. Observe again before acting.');
-      if (target || options.snapshot !== undefined) {
+      if (target || options.snapshot !== undefined || action.type === 'type') {
         // The user or app can navigate without passing through this hub.
         // Re-observe inside the same queue operation before trusting old refs.
         await this.nativeCapture(session);
@@ -1001,6 +1001,14 @@ export class AppleHub {
           break;
         }
         case 'type':
+          {
+            const secureFields = session.snapshot?.elements.filter(element => element.role === 'SecureTextField') ?? [];
+            const element = action.element ? this.element(session, action.element) : undefined;
+            const intoSecureField = element?.role === 'SecureTextField'
+              || (action.x !== undefined && secureFields.some(field => action.x! >= field.frame.x && action.x! <= field.frame.x + field.frame.width && action.y! >= field.frame.y && action.y! <= field.frame.y + field.frame.height))
+              || (!action.element && action.x === undefined && secureFields.length > 0);
+            if (intoSecureField) throw new Error('Sim Stage does not type into secure fields. Enter credentials directly on the device outside the assistant conversation.');
+          }
           if (action.element || action.x !== undefined) {
             const element = action.element ? this.element(session, action.element) : undefined;
             const target = element?.point ?? { x: action.x!, y: action.y! };
@@ -1074,6 +1082,8 @@ export class AppleHub {
       if (settings.reduceMotion !== undefined) flags.push('--reduce-motion', settings.reduceMotion ? 'on' : 'off');
       if (settings.reduceTransparency !== undefined) flags.push('--reduce-transparency', settings.reduceTransparency ? 'on' : 'off');
       if (flags.length) await this.boundary.command(['devicectl', '--quiet', 'device', 'settings', 'appearance', '--device', id, ...flags]);
+      // Settings commands can return before the foreground app redraws.
+      if (Object.keys(settings).length) await this.waitForIdle(session);
       const enabled = options.accessibilityEnabled ?? session.public.accessibilityEnabled;
       const capture = enabled ? await this.nativeCapture(session) : await this.screenCapture(session);
       const result = await this.captureResult(session, capture, enabled, options);

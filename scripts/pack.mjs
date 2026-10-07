@@ -16,7 +16,7 @@ const { version } = JSON.parse(await readFile(new URL("../package.json", import.
 const archive = `${destination}sim-stage-${version}.zip`;
 const stage = await mkdtemp(join(tmpdir(), "sim-stage-zip-"));
 try {
-  const files = ["plugin.json", ".codex-plugin", "dist", "assets"];
+  const files = ["plugin.json", ".codex-plugin", "dist", "assets", "skills", "LICENSE", "NOTICE"];
   await stagePlugin(root, stage);
   await rm(archive, { force: true });
   const zip = spawnSync("zip", ["-q", "-r", archive, ...files, ".mcp.json", "mcp.json"], { cwd: stage, stdio: "inherit" });

@@ -251,6 +251,21 @@ test('failed initial hierarchy capture closes the newly created native session',
   assert.equal((await f.hub.status()).sessions.length, 0);
 });
 
+test('settings observe the rendered screen after native preferences change', async (t) => {
+  const f = await fixture(t);
+  const session = await f.hub.connect('sim-1');
+  const rendered = Buffer.concat([png(), Buffer.from('rendered-settings')]);
+  f.setCommandHook(async args => {
+    if (args.includes('screenshot')) {
+      f.setScreen(rendered);
+      await writeFile(f.screenshotPath, rendered);
+    }
+    return undefined;
+  });
+  const changed = await f.hub.settings(session.id, { appearance: 'dark' }, { screenshot: 'always', resolution: 'full' });
+  assert.deepEqual(Buffer.from(changed.screenshot!.data, 'base64'), rendered);
+});
+
 test('settings use documented argument contracts for simulator and physical devices', async (t) => {
   const f = await fixture(t);
   const simulatorSession = await f.hub.connect('sim-1');
@@ -485,6 +500,21 @@ test('coordinate scroll starts at its requested point and clamps the endpoint', 
   const count = f.calls.length;
   await assert.rejects(f.hub.action(session.id, { type: 'scroll', direction: 'down', x: 440, y: 300, distance: 0.6 }), /outside/);
   assert.equal(f.calls.length, count);
+});
+
+test('typing rejects secure fields by ref, selector, coordinates and uncertain focus before input', async (t) => {
+  const f = await fixture(t);
+  const session = await f.hub.connect('sim-1');
+  await writeFile(f.hierarchyPath, "Window, {{0.0, 0.0}, {440.0, 956.0}}\n SecureTextField, {{10.0, 10.0}, {200.0, 40.0}}, label: 'Password', value: 'sample-secret-marker'\n TextField, {{10.0, 70.0}, {200.0, 40.0}}, label: 'Display name'");
+  const capture = await f.hub.capture(session.id, { screenshot: 'never' });
+  assert.equal(JSON.stringify(capture.elements).includes('sample-secret-marker'), false);
+  f.calls.length = 0;
+  for (const target of [{ element: { ref: 'e1' } }, { element: { label: 'Password' } }, { x: 110, y: 30 }, {}]) {
+    await assert.rejects(f.hub.action(session.id, { type: 'type', text: 'sample-input', ...target }, { snapshot: capture.snapshot, settle: false }), /does not type into secure fields/);
+  }
+  assert.equal(f.calls.some(call => String(call.args.interactionCommand).includes('sample-input')), false);
+  await f.hub.action(session.id, { type: 'type', text: 'Sample name', element: { label: 'Display name' } }, { settle: false });
+  assert.match(String(f.calls.at(-1)?.args.interactionCommand), /^t 110 90 /);
 });
 
 test('coordinate typing keeps focus and text input in one serialized operation', async (t) => {
@@ -1060,7 +1090,7 @@ test('acknowledged simulator taps skip only the discarded observation and preser
   for (const action of [{ type: 'type', text: 'Hi' }, { type: 'launchApp', bundleId: 'dev.example' }] as const) {
     const start = f.calls.length;
     await f.hub.action(session.id, action);
-    assert.equal(f.calls.length - start, 2, 'bridge-only input retains both observations');
+    assert.equal(f.calls.length - start, action.type === 'type' ? 3 : 2, 'typing checks secure fields before bridge input; both inputs retain their resulting observations');
   }
   video.tap = () => Promise.reject(new Error('Delivery failed'));
   const failed = f.calls.length;

@@ -58,11 +58,18 @@ function unquote(raw: string): string {
   return text.length >= 2 && text.startsWith("'") && text.endsWith("'") ? text.slice(1, -1) : text;
 }
 
+/** Secure-field values are never needed to locate or describe a control. */
+export function redactSecureFieldValues(hierarchy: string): string {
+  return hierarchy.split('\n').map(line => /^\s*SecureTextField,/.test(line)
+    ? line.replace(attributePattern, (attribute, key) => key === 'value' ? ', value: [redacted]' : attribute)
+    : line).join('\n');
+}
+
 export function parseHierarchy(hierarchy: string): { bundleId?: string; appLabel?: string; nodes: HierarchyNode[] } {
   const nodes: HierarchyNode[] = [];
   let bundleId: string | undefined;
   let appLabel: string | undefined;
-  for (const line of hierarchy.split('\n')) {
+  for (const line of redactSecureFieldValues(hierarchy).split('\n')) {
     const bundle = line.match(/^Application bundle identifier: (\S+)/);
     if (bundle) { bundleId = bundle[1]; continue; }
     const application = line.match(/^Application, pid: \d+(?:, label: '(.*)')?/);
@@ -150,7 +157,7 @@ export function formatElement(element: ScreenElement): string {
   const parts = [`[${element.ref}]`, element.role];
   if (element.label) parts.push(quote(element.label));
   if (element.identifier) parts.push(`id=${quote(element.identifier, 60)}`);
-  if (element.value) parts.push(`value=${quote(element.value, 40)}`);
+  if (element.value) parts.push(`value=${element.role === 'SecureTextField' ? '"[redacted]"' : quote(element.value, 40)}`);
   if (element.placeholder) parts.push(`placeholder=${quote(element.placeholder, 40)}`);
   for (const flag of ['selected', 'disabled', 'focused'] as const) if (element[flag]) parts.push(flag);
   parts.push(`@ ${element.point.x},${element.point.y}`, `${Math.round(element.frame.width)}×${Math.round(element.frame.height)}`);
