@@ -302,18 +302,26 @@ function videoTransport(stream: SimulatorStream): SimulatorVideoTransport {
  * The still sits under the canvas at the same size. Before the first still,
  * assume portrait, whose long edge is the frame's maximum height.
  */
-function videoMaxDimension(ignoreFloor = false) {
+function videoMaxDimension(ignoreFloor = false, dimensions = capture?.coordinateSpace) {
   const shown = screen.getBoundingClientRect();
   const stage = screenFrame.parentElement;
-  const edge = Math.max(shown.width, shown.height) || parseFloat(getComputedStyle(videoCanvas).maxHeight) || Math.max(stage?.clientWidth ?? 0, stage?.clientHeight ?? 0);
+  const style = getComputedStyle(videoCanvas);
+  const availableWidth = parseFloat(style.maxWidth), availableHeight = parseFloat(style.maxHeight);
+  // The encoded canvas has an intrinsic size. Its displayed rectangle cannot
+  // reveal newly available space after downsizing, so fit the device aspect
+  // ratio to the CSS limits derived from the stage instead.
+  const edge = dimensions && availableWidth > 0 && availableHeight > 0
+    ? Math.max(dimensions.width, dimensions.height) * Math.min(availableWidth / dimensions.width, availableHeight / dimensions.height)
+    : Math.max(shown.width, shown.height) || availableHeight || Math.max(stage?.clientWidth ?? 0, stage?.clientHeight ?? 0);
   const pixels = Math.max(edge * (window.devicePixelRatio || 1), ignoreFloor ? 0 : videoSizeFloor ?? 0);
   return pixels >= 320 ? Math.min(8192, Math.ceil(pixels / 64) * 64) : undefined;
 }
 
-/** Shrink only after a sustained 25% reduction; held touches finish first. */
+/** Resize after sustained shrink or regrowth; live input must drain first. */
 function resizeVideo() {
   const needed = videoMaxDimension(true);
-  if (!videoPlayer || videoRequestedDimension === undefined || needed === undefined || needed > videoRequestedDimension * 0.75) {
+  const growing = videoRequestedDimension !== undefined && needed !== undefined && needed > videoRequestedDimension * 1.25 && Math.max(videoCanvas.width, videoCanvas.height) >= videoRequestedDimension - 2;
+  if (!videoPlayer || videoRequestedDimension === undefined || needed === undefined || !growing && needed > videoRequestedDimension * 0.75) {
     if (videoResizeTimer !== undefined) clearTimeout(videoResizeTimer);
     videoResizeTimer = videoResizeTarget = undefined;
     return;
@@ -325,7 +333,7 @@ function resizeVideo() {
   videoResizeTimer = setTimeout(() => {
     videoResizeTimer = undefined;
     if (generation !== videoGeneration || videoMaxDimension(true) !== needed) { resizeVideo(); return; }
-    if (liveTouch || pointerStart) { resizeVideo(); return; }
+    if (liveTouch || pointerStart || liveSending || liveQueue.length) { resizeVideo(); return; }
     videoSizeFloor = needed;
     stopVideo();
     schedulePoll();
@@ -334,7 +342,7 @@ function resizeVideo() {
 
 /** The size a resized panel or a rotation to landscape needs once it outgrows the stream; the native resolution is the limit. */
 function outgrownVideoDimension(dimensions: { width: number; height: number }) {
-  const needed = videoMaxDimension();
+  const needed = videoMaxDimension(false, dimensions);
   if (videoRequestedDimension === undefined || needed === undefined || needed <= videoRequestedDimension * 1.25 || Math.max(dimensions.width, dimensions.height) < videoRequestedDimension - 2) return undefined;
   return needed;
 }
@@ -385,7 +393,7 @@ async function startVideo() {
         videoFps = renderedAt.length >= 5 ? renderedAt.length : 0;
         videoCodec = stream.format === "hevc" ? "HEVC" : "H.264";
         videoStatus(`Live video · ${videoCodec} · ${videoFps ? `${videoFps} fps` : "idle"}`);
-        const outgrown = liveTouch ? undefined : outgrownVideoDimension(dimensions);
+        const outgrown = liveTouch || pointerStart || liveSending || liveQueue.length ? undefined : outgrownVideoDimension(dimensions);
         if (outgrown) {
           // The restart measures the still, which can lag a rotation; keep the size measured from the live frame.
           videoSizeFloor = outgrown;
