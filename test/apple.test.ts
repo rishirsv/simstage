@@ -162,6 +162,31 @@ test('sessions hide native secrets and AX disabled captures use screenshot comma
   await assert.rejects(f.hub.capture(session.id), (error) => error instanceof SessionExpiredError && error.code === 'SESSION_EXPIRED');
 });
 
+test('simulator boot finishes before Xcode starts its interaction task', async (t) => {
+  const f = await fixture(t);
+  let booted = false;
+  f.setCommandHook(async args => {
+    if (args[0] === 'simctl' && args[1] === 'bootstatus') {
+      assert.deepEqual(args, ['simctl', 'bootstatus', 'sim-1', '-b']);
+      booted = true;
+    }
+    return undefined;
+  });
+  f.setToolHook(async name => {
+    if (name === 'DeviceInteractionStartSession') assert.ok(booted, 'Xcode cannot interact until boot has finished');
+    return undefined;
+  });
+  assert.ok((await f.hub.connect('sim-1')).observation.snapshot);
+  await f.hub.disconnect((await f.hub.status()).sessions[0]!.id);
+  f.setCommandHook(async args => {
+    if (args[1] === 'bootstatus') throw new Error('Boot failed');
+    return undefined;
+  });
+  const calls = f.calls.length;
+  await assert.rejects(f.hub.connect('sim-1'), /Boot failed/);
+  assert.equal(f.calls.length, calls, 'A failed boot does not start an Xcode interaction task');
+});
+
 test('reconnects and different devices use unique native session identifiers', async (t) => {
   const f = await fixture(t);
   const first = await f.hub.connect('sim-1');

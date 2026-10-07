@@ -20,7 +20,7 @@ const SESSION_LABEL = 'Sim Stage';
 
 /** Xcode answers ordinary requests in well under a second. */
 const XCODE_TIMEOUT_MS = 40_000;
-/** The first observation of a shut-down simulator boots it. Codex allows tools 300 s. */
+/** Cold simulator boot and initial observation can take longer. Codex allows tools 300 s. */
 const BOOT_TIMEOUT_MS = 100_000;
 /** Ordinary requests return within MCP clients' common 60 s request timeout, even behind a stuck one. */
 const OPERATION_DEADLINE_MS = 55_000;
@@ -559,6 +559,8 @@ export class AppleHub {
     const sessionId = randomUUID();
     const session = await this.registry.lifecycle(deviceId, async () => {
       if (this.closed) throw new Error('Sim Stage is closed.');
+      // Xcode's interaction task can time out while a fresh device is booting.
+      if (device.kind === 'simulator') await this.boundary.command(['simctl', 'bootstatus', device.id, '-b'], BOOT_TIMEOUT_MS);
       let key: string;
       let origin: NativeSession['origin'] = 'new';
       try {
