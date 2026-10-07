@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
-import lightIcon from "../plugins/sim-stage/assets/composer.svg" with { type: "text" };
-import darkIcon from "../plugins/sim-stage/assets/composer-dark.svg" with { type: "text" };
+import sidebarIcon from "../plugins/sim-stage/assets/sidebar.svg" with { type: "text" };
 import { version } from "./version.js";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -15,8 +14,8 @@ import { computerAction, computerInputs, screenshotOption, type ComputerToolName
 export { DATA_META_KEY, HIERARCHY_META_KEY };
 
 export const UI_URI = "ui://sim-stage/viewer";
-const icons: Icon[] = ([["light", lightIcon], ["dark", darkIcon]] as const).map(([theme, svg]) => ({
-  src: `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
+const icons: Icon[] = (["light", "dark"] as const).map(theme => ({
+  src: `data:image/svg+xml;base64,${Buffer.from(sidebarIcon).toString("base64")}`,
   mimeType: "image/svg+xml", sizes: ["any"], theme,
 }));
 export type Hub = Pick<AppleHub, "status" | "connect" | "capture" | "frame" | "stream" | "streamRead" | "streamStop" | "input" | "action" | "settings" | "disconnect" | "createSimulator" | "deleteSimulator" | "close">;

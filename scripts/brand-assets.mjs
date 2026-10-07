@@ -11,6 +11,9 @@ const items=[['icon.svg','logo.png',false,false,1024],['icon-dark.svg','logo-dar
 await mkdir(assets,{recursive:true});
 await mkdir(`${root}artifacts/submission/`,{recursive:true});
 for(const [source,,dark,composer] of items)await writeFile(assets+source,svg(dark,composer));
+// The desktop recolors tool icons through a mask; black stays opaque with either
+// alpha or inverted-luminance masks, including hosts that ignore the SVG mask type.
+await writeFile(assets+'sidebar.svg',svg(false,true).replaceAll('#3478F6','#000000').replace('stroke-width="32"','stroke-width="40"').replace('stroke-width="20"','stroke-width="24"'));
 const browser=await chromium.launch({executablePath:process.env.CHROME_PATH??'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
 try{
  const page=await browser.newPage({deviceScaleFactor:1});

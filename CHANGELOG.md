@@ -4,6 +4,7 @@
 
 - Adds phone and focus icons for light/dark listings and transparent composer use.
 - Advertises the bundled phone icons on MCP entrypoints so the desktop sidebar uses them too.
+- Uses a heavier monochrome phone mask for clear sidebar contrast and documents opening beside chat.
 - Bundles the drive-simulator skill with device selection, fresh snapshots, visible verification, settings restoration and scoped cleanup.
 - Corrects tool side-effect annotations and declares the embedded viewer's network policy.
 - Redacts secure accessibility-field text values and rejects typing into observed secure fields.
