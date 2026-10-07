@@ -1,8 +1,8 @@
 # Sim Stage performance experiments
 
 All eleven experiments were implemented and measured. Nine optimizations and the
-age-accounting prerequisite have separate ready-for-review PRs. The 60 fps cap
-was rejected because it reduced drawn cadence. No PR has been merged.
+age-accounting prerequisite have separate PRs linked below. The 60 fps cap
+was rejected because it reduced drawn cadence.
 
 ## Implementation results, October 6, 2026
 
@@ -90,6 +90,25 @@ Raw samples, prototypes, benchmark programs, images, and logs remain in ignored
 `artifacts/performance`. They are local reproducibility artifacts, not committed
 or uploaded device inventories. The original investigation and proposed field
 monitoring below remain historical evidence and follow-up work.
+
+## Merge and deployment validation, October 6, 2026
+
+The release integration includes all ten experiment PRs and their five stacked
+review fixes. It retains PR #1's historical migration audit while preserving
+the current runtime and architecture. Touch cleanup survives uncertain releases;
+settling rejection falls back without replaying input; resize waits for queued
+input to drain and regrows from available CSS space; simulator creation bypasses
+stale discovery. Original background benchmark samples and scripts are now
+tracked under `docs/performance/evidence/`.
+
+Native/browser/server build, typecheck, all 165 tests, packing and isolated
+package verification pass. The real Chrome layout fixture measures 960 → 576 →
+960 despite fixed intrinsic canvas dimensions. Real simulator creation, clone,
+fresh discovery and ownership checks pass. No new performance percentages are
+claimed for these correctness fixes.
+
+Release JS SHA-256: `cde1df405fb951708b221c30ffb87a86c218362a29f46d3b3dccd063e14717d6`.
+Release native helper SHA-256: `3c95fbf5de91d74f8b2c2858e498528f61b582e5c6533b8a7a373e2aa4016f27`.
 
 ## Original investigation, October 5, 2026
 

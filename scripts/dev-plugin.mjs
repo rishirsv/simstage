@@ -21,5 +21,9 @@ const manifestPath = `${plugin}.codex-plugin/plugin.json`;
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 manifest.version = `${manifest.version}+codex.${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}`;
 await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+const portablePath = `${plugin}plugin.json`;
+const portable = JSON.parse(await readFile(portablePath, "utf8"));
+portable.version = manifest.version;
+await writeFile(portablePath, JSON.stringify(portable, null, 2) + "\n");
 
 console.log(`Staged Sim Stage ${manifest.version} at ${plugin}`);
