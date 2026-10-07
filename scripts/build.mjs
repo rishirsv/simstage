@@ -12,5 +12,5 @@ const app = await build({ entryPoints: ["src/app.ts"], outfile: `${destination}/
 const stylesheet = await postcss([tailwindcss({ optimize: true })]).process(await readFile("src/app.css", "utf8"), { from: "src/app.css", to: `${destination}/app.css` });
 stylesheet.root.walkComments(comment => comment.remove());
 await writeFile(`${destination}/app.css`, stylesheet.root.toString());
-const server = await build({ entryPoints: ["src/server.ts"], outfile: `${destination}/server.js`, bundle: true, legalComments: "external", metafile: true, format: "esm", platform: "node", target: "es2022", packages: "bundle", banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' } });
+const server = await build({ entryPoints: ["src/server.ts"], outfile: `${destination}/server.js`, loader: { ".svg": "text" }, bundle: true, legalComments: "external", metafile: true, format: "esm", platform: "node", target: "es2022", packages: "bundle", banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' } });
 await writeNotices(destination, [app.metafile, server.metafile]);

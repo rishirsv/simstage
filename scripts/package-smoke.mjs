@@ -12,7 +12,16 @@ export async function smokeArtifact({ name, version, command, args, cwd, additio
   transport.stderr?.on("data", chunk => { stderr += chunk.toString(); });
   try {
     await client.connect(transport, { timeout: 15_000 });
-    assert.deepEqual(client.getServerVersion(), { name: "sim-stage", version });
+    const serverInfo = client.getServerVersion();
+    assert.equal(serverInfo.name, "sim-stage");
+    assert.equal(serverInfo.version, version);
+    assert.deepEqual(serverInfo.icons.map(icon => icon.theme), ["light", "dark"]);
+    for (const icon of serverInfo.icons) {
+      assert.equal(icon.mimeType, "image/svg+xml");
+      assert.deepEqual(icon.sizes, ["any"]);
+      assert.match(icon.src, /^data:image\/svg\+xml;base64,/);
+      assert.match(Buffer.from(icon.src.split(",")[1], "base64").toString(), /<svg[^>]+viewBox="0 0 512 512"/);
+    }
     const { tools } = await client.listTools();
     for (const tool of tools) {
       for (const hint of ["readOnlyHint", "destructiveHint", "openWorldHint"]) {
@@ -22,6 +31,8 @@ export async function smokeArtifact({ name, version, command, args, cwd, additio
     for (const required of [...requiredTools, ...additionalTools]) assert.ok(tools.some(tool => tool.name === required), `Missing required tool ${required}`);
     const opener = tools.find(tool => tool.name === "open_sim_stage");
     const settings = tools.find(tool => tool.name === "sim_stage_preferences");
+    assert.deepEqual(opener.icons, serverInfo.icons, "Sidebar entrypoint must carry the bundled phone icons");
+    assert.deepEqual(settings.icons, serverInfo.icons);
     assert.deepEqual(opener._meta["openai/ui"].entrypoints.map(entry => entry.type).sort(), ["global", "thread"]);
     assert.deepEqual(settings._meta["openai/ui"].entrypoints.map(entry => entry.type), ["settings"]);
     const { resources } = await client.listResources();

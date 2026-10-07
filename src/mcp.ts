@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
+import lightIcon from "../plugins/sim-stage/assets/composer.svg" with { type: "text" };
+import darkIcon from "../plugins/sim-stage/assets/composer-dark.svg" with { type: "text" };
 import { version } from "./version.js";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { ListToolsRequestSchema, type CallToolResult, type Icon, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import type { OpenAIUiToolMetadata } from "@openai/mcp-extensions/server";
 import type { AppleHub } from "./apple.js";
@@ -13,6 +15,10 @@ import { computerAction, computerInputs, screenshotOption, type ComputerToolName
 export { DATA_META_KEY, HIERARCHY_META_KEY };
 
 export const UI_URI = "ui://sim-stage/viewer";
+const icons: Icon[] = ([["light", lightIcon], ["dark", darkIcon]] as const).map(([theme, svg]) => ({
+  src: `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
+  mimeType: "image/svg+xml", sizes: ["any"], theme,
+}));
 export type Hub = Pick<AppleHub, "status" | "connect" | "capture" | "frame" | "stream" | "streamRead" | "streamStop" | "input" | "action" | "settings" | "disconnect" | "createSimulator" | "deleteSimulator" | "close">;
 const deviceId = z.string().min(1).max(200);
 const sessionId = z.string().uuid();
@@ -243,7 +249,7 @@ export async function appHtml(assetRoot: URL, preview = false): Promise<string> 
 }
 
 export function createHubServer(hub: Hub, assetRoot: URL): McpServer {
-  const server = new McpServer({ name: "sim-stage", version }, { instructions: "Use open_sim_stage to show the device viewer. sim_stage_status lists sessions on this server, devices open in other Sim Stage chats or windows, and every device. Reuse a listed session ID, or device_connect a device: it boots a stopped simulator, reuses this server's session, or joins the one another chat or window holds, and the viewer follows it. To keep testing off the user's own simulator, simulator_create makes a fresh one (or clones a shut-down one); simulator_delete removes it afterwards. Observe before acting. Work in small verified steps: observe, act on one element by ref, then read the returned screen to confirm the result before the next step. Results are text-first: the element list describes the screen, and with the default screenshot: \"auto\" an image is attached only when the elements cannot describe it. Pass screenshot: \"always\" to judge layout, color or images. Coordinates are logical device points in coordinateSpace. accessibilityEnabled controls whether elements are exposed; it does not change iOS accessibility settings. Device operations pass through Apple's Xcode bridge. Restore changed settings and disconnect sessions when finished." });
+  const server = new McpServer({ name: "sim-stage", version, icons }, { instructions: "Use open_sim_stage to show the device viewer. sim_stage_status lists sessions on this server, devices open in other Sim Stage chats or windows, and every device. Reuse a listed session ID, or device_connect a device: it boots a stopped simulator, reuses this server's session, or joins the one another chat or window holds, and the viewer follows it. To keep testing off the user's own simulator, simulator_create makes a fresh one (or clones a shut-down one); simulator_delete removes it afterwards. Observe before acting. Work in small verified steps: observe, act on one element by ref, then read the returned screen to confirm the result before the next step. Results are text-first: the element list describes the screen, and with the default screenshot: \"auto\" an image is attached only when the elements cannot describe it. Pass screenshot: \"always\" to judge layout, color or images. Coordinates are logical device points in coordinateSpace. accessibilityEnabled controls whether elements are exposed; it does not change iOS accessibility settings. Device operations pass through Apple's Xcode bridge. Restore changed settings and disconnect sessions when finished." });
   registerAppResource(server, "Sim Stage", UI_URI, {}, async () => ({ contents: [{ uri: UI_URI, mimeType: RESOURCE_MIME_TYPE, text: await appHtml(assetRoot), _meta: { ui: { prefersBorder: false, csp: { connectDomains: [], resourceDomains: [], frameDomains: [] } } } }] }));
   const definitions: { name: ToolName; title: string; description: string; readOnly: boolean; destructive?: boolean; openWorld?: boolean; appOnly?: boolean; opening?: OpenAIUiToolMetadata }[] = [
     { name: "open_sim_stage", title: "Sim Stage", description: "Open the local Sim Stage. View and control simulators or connected Apple devices beside the conversation.", readOnly: true, opening: { entrypoints: [{ type: "global" }, { type: "thread" }], preferredModelDisplayMode: "fullscreen" } },
@@ -269,8 +275,10 @@ export function createHubServer(hub: Hub, assetRoot: URL): McpServer {
     { name: "simulator_type_text", title: "Type in simulator", description: "Type literal Unicode text inside the selected simulator, optionally focusing a target first. Target accepts [x,y], a selector or an element number/ref with its snapshot. Focus and typing execute together. Returns the resulting screen and accessibility state.", readOnly: false, destructive: true, openWorld: true },
     { name: "simulator_press_key", title: "Press simulator key", description: "Press a supported keyboard or hardware key on the selected simulator: Return, Tab, Backspace, Home, Lock, VolumeUp or VolumeDown. Returns the resulting screen. Modifier shortcuts and desktop keyboard events are not exposed.", readOnly: false, destructive: true, openWorld: true },
   ];
+  const tools: Tool[] = [];
   for (const definition of definitions) {
-    registerAppTool(server, definition.name, {
+    const config = {
+      ...(definition.opening ? { icons } : {}),
       title: definition.title,
       description: definition.description,
       inputSchema: toolInputs[definition.name],
@@ -279,7 +287,11 @@ export function createHubServer(hub: Hub, assetRoot: URL): McpServer {
         ui: { visibility: definition.appOnly ? ["app"] : ["app", "model"], ...(definition.opening ? { resourceUri: UI_URI } : {}) },
         ...(definition.opening ? { "openai/ui": definition.opening } : {}),
       },
-    }, (args: unknown) => callHubTool(hub, definition.name, args));
+    };
+    registerAppTool(server, definition.name, config, (args: unknown) => callHubTool(hub, definition.name, args));
+    tools.push({ ...config, name: definition.name, inputSchema: z.toJSONSchema(config.inputSchema, { io: "input", target: "draft-7" }) as Tool["inputSchema"] });
   }
+  // McpServer's registration drops icons; publish the complete standard Tool metadata.
+  server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
   return server;
 }
