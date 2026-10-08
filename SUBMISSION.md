@@ -15,6 +15,8 @@ Completion: an accepted route that preserves the plugin's local simulator behavi
 
 ## 2. Finish distribution and evidence
 
+- [x] **Public technical release:** [0.1.5 ZIP and npm archive](https://github.com/rishirsv/simstage/releases/tag/v0.1.5) published on GitHub. Uploaded asset SHA-256 values match the verified local artifacts. Registry publication is a separate pending step.
+
 - [ ] **Maintainer: publish `sim-stage-mcp@0.1.5` and verify registry installation.** The npm registry version is unpublished. Publishing was attempted but the local CLI has no npm authentication. Chrome signup works and is prepared with username `rishirsv`; the publisher must enter email/password, accept npm terms, verify email and complete `bunx npm login`. This blocks the Git marketplace launcher in `plugins/sim-stage/.mcp.json` and `mcp.json`; source installation and the bundled ZIP work independently. Publish only the verified tarball, using `bun scripts/publish.mjs`, and compare registry integrity with the local artifact. Do not overwrite an existing version with different bytes.
 - [x] **Clean source installation:** an independent public clone passed frozen install/build and the README marketplace/plugin install commands in an isolated Codex home. The plugin and bundled skill were enabled; active user configuration was preserved.
 - [x] **Final 0.1.5 actual Codex CLI discovery:** the built stdio server loads without skipped-tool warnings. Fixed four coordinate-input schemas rejected by Codex; all three negative prompts passed using the authenticated host with only Sim Stage enabled.
@@ -24,11 +26,11 @@ Completion: an accepted route that preserves the plugin's local simulator behavi
 - [ ] **Deferred by publisher: record and host a real-app walkthrough.** Show installation/version, inventory, connection, observed Settings navigation, light/dark comparison and restoration, fresh live video/input, scoped disconnect and a boundary prompt. Verify readable playback without login barriers or private screen content, then add the actual URL as `review.demo_recording_url` in the canonical manifest and regenerate the overlay. Use the publisher’s real app for the final walkthrough. A private simulator-only recording was captured as test evidence; neither it nor the website’s scripted demo completes this item.
 - [ ] **Maintainer: establish reviewer access.** Confirm required Mac/Xcode/runtime setup and sample data through the accepted local route. If authentication becomes necessary, put dedicated reviewer credentials and instructions only in secure portal fields.
 
-The five positive and three negative cases are defined in [plugin.json](plugins/sim-stage/plugin.json). Final 0.1.5 positive workflows were exercised through its actual packaged MCP runtime; negative natural-language prompts ran in authenticated Codex CLI (gpt-5.5), limited to this integration. The exact saved portal version must still be tested after upload. The initial unconstrained host attempted an unrelated desktop tool for the Terminal prompt; permission denied it. These results establish this plugin’s boundary, not universal refusal by hosts with other integrations.
+The five positive and three negative cases are defined in [plugin.json](plugins/sim-stage/plugin.json). Final 0.1.5 positive workflows were exercised through its actual packaged MCP runtime. An authenticated Codex CLI prompt also completed connection, observed General navigation, light/dark screenshots, restoration and disconnect with equivalent supported tools; the direct harness separately exercised the exact manifest aliases. Negative natural-language prompts ran in authenticated Codex CLI (gpt-5.5), limited to this integration. The disposable review simulator was deleted after cleanup; user devices were preserved. The exact saved portal version must still be tested after upload. The initial unconstrained host attempted an unrelated desktop tool for the Terminal prompt; permission denied it. These results establish this plugin’s boundary, not universal refusal by hosts with other integrations.
 
 | Case | Local result and evidence limit |
 | --- | --- |
-| Inventory | Passed actual MCP inventory; dedicated sample-data device listed. |
+| Inventory | Passed actual MCP inventory and natural CLI prompt; dedicated sample-data device listed. Embedded viewer expansion remains unverified. |
 | Connect and boot | Passed actual connection, screenshot, elements, logical coordinates and current snapshot; final cold-boot result recorded in private evidence. |
 | Settings navigation | Passed exact `simulator_click` with current General ref/snapshot; returned General screen. |
 | Appearance | Passed omitted-settings read of light, actual light/dark captures, and verified restoration to light. |
@@ -66,7 +68,7 @@ If the version changes, use its actual archive names. Update release notes in th
 
 - [ ] **Publisher: finish developer verification** in Personal / Default project. Upload currently displays “You need a verified developer identity”; Start requires a default payment method even though the individual status label says Identity approved. Chrome is open at Add payment details. Publisher must complete card setup and verification; no card details were entered. Owner or Apps Management Write access is required.
 - [ ] **Maintainer/publisher: upload the final ZIP through the accepted route.** Inspect the exact saved draft's listing, countries, commerce, cases, demo link and release notes. Upload success is not review readiness.
-- [ ] **Maintainer: complete required metadata, skill and MCP scans; resolve setup errors and findings.** GitHub CI was enabled and its first release-check run passed; this does not imply OpenAI scans passed.
+- [ ] **Maintainer: complete required metadata, skill and MCP scans; resolve setup errors and findings.** GitHub CI was enabled and the 0.1.5 release-check run passed; this does not imply OpenAI scans passed.
 - [ ] **Maintainer: complete domain/authentication setup if the accepted route uses remote MCP.** The website's DNS verification does not replace the portal's MCP challenge. Local stdio currently has no OAuth account to connect.
 - [ ] **Publisher: supply secure reviewer access details and confirm the saved review materials.** Keep that access available during review.
 - [ ] **Publisher: complete legal/policy attestations and submit for review.** Track the decision and resolve feedback. Publish only after approval and an authorized publication action.
@@ -86,6 +88,6 @@ These portal steps follow [OpenAI's submission workflow](https://developers.open
 | Public package install | 0.1.5 unpublished; publishing blocked by missing npm authentication. | Blocked |
 | Reviewer cases / recording | Four positive tool workflows and three final CLI boundary prompts pass; live viewer proof pending; real-app recording deferred. | Incomplete |
 | OpenAI portal / identity / scans | Inspected; upload blocked by identity/payment-method prerequisite; no draft or scans. | Blocked |
-| GitHub CI | Enabled; [initial run](https://github.com/rishirsv/simstage/actions/runs/37716849977) passed all release checks. | Passed |
+| GitHub CI | Enabled; [0.1.5 run](https://github.com/rishirsv/simstage/actions/runs/37717409371) passed all release checks. | Passed |
 
 This is a submission-readiness audit, not a penetration test or approval decision. Keep the source, tests, build/release scripts, icon masters and licenses: they are needed to maintain and reproduce the package.
