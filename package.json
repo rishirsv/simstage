@@ -15,10 +15,9 @@
     "dev": "bun src/server.ts",
     "preview": "bun packages/sim-stage-mcp/dist/server.js --preview",
     "pack": "bun scripts/pack.mjs",
-    "verify:packages": "bun scripts/verify-packages.mjs",
+    "verify:packages": "bun scripts/verify-gallery.mjs",
     "dev:plugin": "bun scripts/dev-plugin.mjs",
     "version": "bun scripts/sync-version.mjs && git add packages/sim-stage-mcp/package.json plugins/sim-stage/plugin.json plugins/sim-stage/.codex-plugin/plugin.json plugins/sim-stage/.mcp.json plugins/sim-stage/mcp.json",
-    "benchmark:browser": "bun scripts/browser-benchmark.mjs",
     "assets": "node scripts/brand-assets.mjs"
   },
   "dependencies": {

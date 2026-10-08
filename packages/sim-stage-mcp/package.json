@@ -18,14 +18,5 @@
   "cpu": [
     "arm64"
   ],
-  "bin": {
-    "sim-stage-mcp": "bin/server.mjs"
-  },
-  "files": [
-    "bin",
-    "dist"
-  ],
-  "publishConfig": {
-    "access": "public"
-  }
+  "private": true
 }

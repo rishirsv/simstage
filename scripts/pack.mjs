@@ -8,10 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const destination = fileURLToPath(new URL("../release/", import.meta.url));
 await mkdir(destination, { recursive: true });
-const pack = spawnSync(process.execPath, ["pm", "pack", "--ignore-scripts", "--destination", destination], { cwd: root + "packages/sim-stage-mcp", stdio: "inherit" });
-if (pack.status !== 0) process.exit(pack.status || 1);
-
-// The ZIP is self-contained: it runs its bundled server instead of fetching the npm package.
+// The submission ZIP runs its bundled server.
 const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const archive = `${destination}sim-stage-${version}.zip`;
 const stage = await mkdtemp(join(tmpdir(), "sim-stage-zip-"));

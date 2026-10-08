@@ -67,7 +67,7 @@ try {
     assert.deepEqual(await readFile(join(directory, "dist", file)), await readFile(join(root, "packages", "sim-stage-mcp", "dist", file)));
   }
   execFileSync("codesign", ["--verify", "--strict", join(directory, "dist", "simulator-stream")]);
-  console.log(`Verified sim-stage-${version}.zip: portable manifest, review metadata, isolated MCP, viewer and signed native helper. Local MCP partner approval remains required.`);
+  console.log(`Verified sim-stage-${version}.zip: portable manifest, review metadata, isolated MCP, viewer and signed native helper. Local MCP submission support remains unconfirmed.`);
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

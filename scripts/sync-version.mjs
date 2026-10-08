@@ -14,5 +14,5 @@ const { interface: presentation, ...openai } = extensions["com.openai"];
 await writeFile(new URL("../plugins/sim-stage/.codex-plugin/plugin.json", import.meta.url), JSON.stringify({
   ...identity, interface: presentation, skills: "./skills/", mcpServers: "./.mcp.json", extensions: { "com.openai": openai },
 }, null, 2) + "\n");
-// A Git-installed plugin has no build output; it runs the published server of the same version.
-await writeLaunchManifests(new URL("../plugins/sim-stage/", import.meta.url), { command: "bun", args: ["x", "--bun", `sim-stage-mcp@${version}`] });
+// Both manifests run the server bundled into the plugin.
+await writeLaunchManifests(new URL("../plugins/sim-stage/", import.meta.url), { command: "bun", args: ["./dist/server.js"], cwd: "./" });

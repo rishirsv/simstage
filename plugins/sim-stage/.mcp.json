@@ -3,10 +3,9 @@
     "sim-stage": {
       "command": "bun",
       "args": [
-        "x",
-        "--bun",
-        "sim-stage-mcp@0.1.5"
-      ]
+        "./dist/server.js"
+      ],
+      "cwd": "./"
     }
   }
 }

@@ -26,9 +26,7 @@ jobs:
       - run: bun run verify:packages
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: packages-macos-26-bun1.4.2
-          path: |
-            release/*.tgz
-            release/*.zip
+          name: submission-zip-macos-26-bun1.4.2
+          path: release/*.zip
           if-no-files-found: error
           retention-days: 14

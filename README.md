@@ -25,7 +25,7 @@ codex plugin marketplace add "$PWD/.dev-plugin" --json
 codex plugin add sim-stage@sim-stage-dev --json
 ```
 
-Start a new Codex chat and ask: "Open Sim Stage and show my available simulators." To update, rebuild and repeat the last two commands. This source installation uses the checkout's runtime and does not require the unpublished npm package.
+Start a new Codex chat and ask: "Open Sim Stage and show my available simulators." To update, rebuild and repeat the last two commands. This source installation uses the checkout's bundled runtime.
 
 Use current accessibility refs for input and request `screenshot: "always"` for visual checks. The [simulator skill](plugins/sim-stage/skills/drive-simulator/SKILL.md) covers selection, snapshots, settings and cleanup. Sim Stage does not build apps or generate SwiftUI previews.
 
@@ -41,7 +41,7 @@ bun run pack
 bun run verify:packages
 ```
 
-The ZIP and npm archive are written to `release/` and verified from isolated extraction directories. Native signing is ad-hoc, without Developer ID notarization. Edit `plugins/sim-stage/plugin.json`, then run `bun scripts/sync-version.mjs` to regenerate its Codex overlay. Keep generated builds, recordings and measurements out of Git.
+The submission ZIP is written to `release/` and verified from an isolated extraction directory. Native signing is ad-hoc, without Developer ID notarization. Edit `plugins/sim-stage/plugin.json`, then run `bun scripts/sync-version.mjs` to regenerate its Codex overlay. Keep generated builds, recordings and measurements out of Git.
 
 For another local MCP client, build and run `bun packages/sim-stage-mcp/dist/server.js`; the root `.mcp.json` declares this command. `bun run preview` prints a loopback browser URL.
 
