@@ -47,6 +47,6 @@ For another local MCP client, build and run `bun packages/sim-stage-mcp/dist/ser
 
 Source lives in `src/`, the native helper in `native/`, plugin metadata and assets in `plugins/sim-stage/`, and the Sites website in `sites/`.
 
-[Privacy](PRIVACY.md) · [Terms](TERMS.md) · [Security](SECURITY.md) · [Submission tasks](SUBMISSION.md)
+[Privacy](PRIVACY.md) · [Terms](TERMS.md) · [Security](SECURITY.md)
 
 MIT; see [LICENSE](LICENSE). Derived from [Max Weinbach's Apple simulator plugin](https://github.com/mweinbach/AppleSimChatGPTPlugin), with attribution in [NOTICE](NOTICE). Bundled dependency notices ship with the runtime. Maintained by Rishi Sharma; independent of Apple and OpenAI.

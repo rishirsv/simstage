@@ -1,5 +1,5 @@
 import { AppleHub, NativeAppleBoundary } from '../src/apple.ts';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { summary } from './statistics.ts';
 const native=new NativeAppleBoundary();let observations=0;
 const starts:any[]=[];
@@ -24,5 +24,6 @@ try {
   rows.push({pair,variant,ms:performance.now()-start,actionMs:performance.now()-at,queuePlusRefreshMs:starts[before].at-at,observations:observations-count,snapshot:result.snapshot});
  }
  const report={scope:'30 alternating pairs, actual bridge captures and actions; background refresh requested immediately ahead of action after a quiet action observation. Settling fixed identically to isolate queue wait; no reduction claimed without this collision.',rows,summary:Object.fromEntries(['baseline','candidate'].map(variant=>[variant,{...summary(rows.filter(r=>r.variant===variant).map(r=>r.actionMs)),observations:rows.filter(r=>r.variant===variant).reduce((sum,r)=>sum+r.observations,0)/30}]))};
+ await mkdir(new URL('../artifacts/',import.meta.url),{recursive:true});
  await writeFile(new URL('../artifacts/background-results.json',import.meta.url),JSON.stringify(report,null,2));console.log(JSON.stringify(report.summary,null,2));
 } finally{await hub.close();}

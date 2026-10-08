@@ -1,6 +1,5 @@
 node_modules/
-artifacts/*
-!artifacts/.gitkeep
+artifacts/
 packages/sim-stage-mcp/dist/
 release/
 .dev-plugin/
