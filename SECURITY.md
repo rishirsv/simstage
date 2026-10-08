@@ -8,7 +8,7 @@ Device actions can change data or submit information in the foreground app. Tool
 
 ## Report a problem
 
-Use the repository's private vulnerability reporting if enabled. Otherwise open a minimal issue asking for a private reporting channel; omit exploit details, credentials, real screenshots and personal data until a private channel is established. Do not test an exploit against another person's device or account.
+Use [private vulnerability reporting](https://github.com/rishirsv/simstage/security/advisories/new) if it is enabled. Otherwise open a minimal issue asking for a private reporting channel; omit exploit details, credentials, real screenshots and personal data until a private channel is established. Do not test an exploit against another person's device or account.
 
 ## Release checks
 

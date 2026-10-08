@@ -26,4 +26,4 @@ To remove the local registry, stop the Sim Stage MCP processes first, then delet
 
 ## Support
 
-Rishi Sharma maintains this fork. Repository issues are the support channel. Use synthetic examples and redact device IDs, session keys, personal paths and screen content before sharing a report. Public hosting and the final published policy URL remain release items until verified.
+Rishi Sharma maintains Sim Stage. Repository issues are the support channel. Use synthetic examples and redact device IDs, session keys, personal paths and screen content before sharing a report.

@@ -30,6 +30,6 @@ Update the root version and release notes, then rebuild, test, pack and verify. 
 
 Local redeployment uses `bun run dev:plugin` and the supported `codex plugin` commands in the README. Edit the source marketplace, not the installed cache. Verify the installed version, bundled skill/assets and an actual MCP call.
 
-Directory publication additionally needs the agreed local-MCP route, verified publisher, public policy/support pages, reviewer-accessible demo, review cases, required scans and publisher attestations. Keep local package verification separate from those checks.
+Publishing to the OpenAI plugin directory also needs a verified publisher, public policy and support pages, review cases and the required scans. Keep those checks separate from local package verification.
 
-Use concise conventional commit subjects such as `fix: reject stale screen targets`. Pull requests should state the change, reason and validation.
+Follow the [Code of Conduct](CODE_OF_CONDUCT.md). Use concise conventional commit subjects such as `fix: reject stale screen targets`. Pull requests should state the change, reason and validation.

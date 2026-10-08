@@ -1,0 +1,60 @@
+name: Bug report
+description: Sim Stage misbehaves, fails to start, or returns the wrong screen.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a sample-data simulator. Redact device IDs, session keys, personal paths and screen content. Do not paste credentials or real screenshots.
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "27.0"
+    validations:
+      required: true
+  - type: input
+    id: xcode
+    attributes:
+      label: Xcode version
+      placeholder: "27.0"
+    validations:
+      required: true
+  - type: input
+    id: bun
+    attributes:
+      label: Bun version
+      description: Output of `bun --version`.
+    validations:
+      required: true
+  - type: input
+    id: simstage
+    attributes:
+      label: Sim Stage version
+      description: The `version` in package.json, or the commit if you installed from source.
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host and version
+      description: The app running the MCP server, for example Codex desktop.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and runtime
+      description: Simulator or physical device model and OS version.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include what you expected and the steps to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Errors or output
+      render: text
