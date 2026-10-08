@@ -1,6 +1,6 @@
 {
   "name": "sim-stage-mcp",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Local Apple simulator and device MCP server with a bundled MCP App viewer",
   "type": "module",
   "license": "MIT",

@@ -205,6 +205,16 @@ test("MCP discovery advertises native host entrypoints and opening accepts empty
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const { tools } = await client.listTools();
+    function checkArrayItems(schema: unknown) {
+      if (!schema || typeof schema !== "object") return;
+      const value = schema as Record<string, unknown>;
+      if (value.type === "array") assert.equal(Array.isArray(value.items), false, "Codex tool schemas require homogeneous object-valued items");
+      for (const child of Object.values(value)) {
+        if (Array.isArray(child)) child.forEach(checkArrayItems);
+        else checkArrayItems(child);
+      }
+    }
+    tools.forEach(tool => checkArrayItems(tool.inputSchema));
     const opening = tools.find(tool => tool.name === "open_sim_stage")!;
     assert.deepEqual((opening._meta?.["openai/ui"] as Record<string, unknown>).entrypoints, [{ type: "global" }, { type: "thread" }]);
     assert.equal((opening._meta?.ui as Record<string, unknown>).resourceUri, UI_URI);

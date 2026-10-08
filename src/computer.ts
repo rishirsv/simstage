@@ -2,9 +2,12 @@ import { z } from "zod";
 import { elementTargetSchema, screenshotModeSchema, type DeviceAction, type ElementTarget, type ScreenshotMode } from "./shared.js";
 
 const point = z.number().finite().nonnegative();
+// A homogeneous array keeps the wire schema compatible with MCP hosts that
+// do not accept draft-7 tuple schemas (array-valued `items`).
+const coordinatePair = z.array(point).length(2).transform(value => [value[0]!, value[1]!] as [number, number]);
 /** Coordinates and numeric element indices follow the simulator's current observation. */
 export const computerTargetSchema = z.union([
-  z.tuple([point, point]),
+  coordinatePair,
   z.number().int().positive(),
   z.string().regex(/^e[1-9]\d*$/),
   elementTargetSchema.refine(value => !!(value.ref || value.label || value.identifier), "Choose an element ref, label, or identifier."),
@@ -23,7 +26,7 @@ export const computerInputs = {
   simulator_screenshot: z.object({ sessionId }),
   simulator_click: z.object({ ...actionOptions, target: computerTargetSchema, clickCount: z.union([z.literal(1), z.literal(2)]).default(1), duration: z.number().min(0.1).max(5).optional().describe("Hold duration in seconds for a long press; omit for an ordinary click.") })
     .refine(value => value.clickCount === 1 || value.duration === undefined, "A double click cannot also be a long press."),
-  simulator_drag: z.object({ ...actionOptions, from: z.tuple([point, point]), to: z.tuple([point, point]), duration: z.number().min(0.1).max(5).default(0.4) }),
+  simulator_drag: z.object({ ...actionOptions, from: coordinatePair, to: coordinatePair, duration: z.number().min(0.1).max(5).default(0.4) }),
   simulator_scroll: z.object({ ...actionOptions, target: computerTargetSchema.optional(), direction: z.enum(["up", "down", "left", "right"]), distance: z.number().min(0.1).max(1).default(0.6) }),
   simulator_type_text: z.object({ ...actionOptions, target: computerTargetSchema.optional(), text: z.string().min(1).max(10000) }),
   simulator_press_key: z.object({ ...actionOptions, key: z.enum(["Return", "Tab", "Backspace", "Home", "Lock", "VolumeUp", "VolumeDown"]) }),

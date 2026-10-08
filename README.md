@@ -12,7 +12,7 @@ View and control an Apple simulator beside a Codex chat. You and the agent use t
 - Xcode open with **Settings → Intelligence → Model Context Protocol** enabled.
 - A desktop host with local stdio MCP and MCP Apps support. Installation is unavailable on web and mobile.
 
-Physical devices must be paired and eligible for Apple's interaction tools. Simulator video uses hardware HEVC with H.264 fallback. The native helper targets macOS 14 or later; development checks run on macOS 27 and Xcode 27.
+Physical-device interaction requires pairing and Apple eligibility and remains unverified in this release. Live video is simulator-only. Simulator video uses hardware HEVC with H.264 fallback. The native helper targets macOS 14 or later; development checks run on macOS 27 and Xcode 27.
 
 ## Install
 

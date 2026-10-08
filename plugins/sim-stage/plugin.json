@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "sim-stage",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "View and control local Apple simulators and connected devices through Xcode.",
   "author": {
     "name": "Rishi Sharma",
@@ -22,7 +22,7 @@
       "interface": {
         "displayName": "Sim Stage",
         "shortDescription": "Inspect and control simulators",
-        "longDescription": "Bring your Apple simulator into the conversation. See the screen live, inspect accessibility elements, and tap, swipe or type using observed targets. Humans can drive the viewer while agents read the resulting screen. Compare light and dark appearance, Dynamic Type, motion, transparency and contrast settings. Create a fresh simulator or clone a shut-down one for a repeatable test setup.\n\nRuns locally on an Apple Silicon Mac with Bun 1.4.2 or later and Xcode 27 with its MCP bridge enabled. Requires a desktop host with local MCP support. Connected physical-device interaction depends on Apple pairing and eligibility checks. Device settings persist, and actions can change app data or submit information. Screenshots and element text returned to the assistant may include what is visible in the selected app.\n\nBased on the Apple simulator plugin developed by Max Weinbach. Independent of Apple and OpenAI.",
+        "longDescription": "Bring your Apple simulator into the conversation. See the screen live, inspect accessibility elements, and tap, swipe or type using observed targets. Humans can drive the viewer while agents read the resulting screen. Compare light and dark appearance, Dynamic Type, motion, transparency and contrast settings. Create a fresh simulator or clone a shut-down one for a repeatable test setup.\n\nRuns locally on an Apple Silicon Mac with Bun 1.4.2 or later and Xcode 27 with its MCP bridge enabled. Requires a desktop host with local MCP support. Physical-device interaction depends on Apple pairing and eligibility checks and remains unverified in this release’s reviewer evidence. Live video is simulator-only. Device settings persist, and actions can change app data or submit information. Screenshots and element text returned to the assistant may include what is visible in the selected app.\n\nBased on the Apple simulator plugin developed by Max Weinbach. Independent of Apple and OpenAI.",
         "developerName": "Rishi Sharma",
         "category": "Developer Tools",
         "capabilities": [
@@ -103,7 +103,7 @@
       },
       "publication": {
         "countries": [],
-        "release_notes": "Adds a phone and focus identity with light/dark listing logos and transparent composer icons. Bundles an agent skill for observed simulator interaction, setting restoration and scoped cleanup. Corrects tool annotations, declares an embedded UI network policy, redacts secure-field text values, rejects typing into observed secure fields, and updates dependencies."
+        "release_notes": "Fixes Codex compatibility for coordinate-target input tools while retaining validated two-point coordinates. Includes observed settings text, secure-field controls, scoped session cleanup, the simulator skill, and public listing/support/privacy/terms links."
       }
     }
   }
