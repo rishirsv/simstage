@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a change to what Sim Stage can do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do with a simulator that Sim Stage does not support?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the tool, viewer or skill change you want.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you tried, including the Xcode and build-ios-apps tools.
