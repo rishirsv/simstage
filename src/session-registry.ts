@@ -4,9 +4,11 @@ import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
+import type { InstanceIdentity } from './shared.js';
+import { z } from 'zod';
 
 /** A Sim Stage server process holding an Xcode device session. */
-export interface SessionHolder { pid: number; sessionId: string; since: string }
+export interface SessionHolder { pid: number; sessionId: string; since: string; instance?: InstanceIdentity }
 export interface SharedSession {
   key: string;
   deviceId: string;
@@ -15,9 +17,28 @@ export interface SharedSession {
   foreign?: boolean;
   holders: SessionHolder[];
 }
-/** The device a Sim Stage process connected most recently; viewers follow it. */
-export interface RegistryFocus { deviceId: string; deviceName: string; pid: number; at: string }
-interface RegistryState { boot: string; sessions: Record<string, SharedSession>; created: string[]; focus?: RegistryFocus }
+export interface PreviewRecord {
+  workspacePath: string;
+  instance: InstanceIdentity;
+  pid: number;
+  url: string;
+  version: string;
+}
+interface CreationOwner { instance: InstanceIdentity; pid: number; boot: string }
+interface RegistryState { boot: string; sessions: Record<string, SharedSession>; created: string[]; previews: Record<string, PreviewRecord>; creators: Record<string, CreationOwner> }
+
+const identitySchema = z.object({ id: z.string().min(1), label: z.string(), workspacePath: z.string().optional() });
+const pidSchema = z.number().int().positive();
+const registrySchema = z.object({
+  boot: z.string().uuid().optional(),
+  sessions: z.record(z.string(), z.object({
+    key: z.string(), deviceId: z.string(), deviceName: z.string(), foreign: z.boolean().optional(),
+    holders: z.array(z.object({ pid: pidSchema, sessionId: z.string(), since: z.string(), instance: identitySchema.optional() })),
+  })).optional(),
+  created: z.array(z.string()).optional(),
+  creators: z.record(z.string(), z.object({ instance: identitySchema, pid: pidSchema, boot: z.string().uuid() })).optional(),
+  previews: z.record(z.string(), z.object({ workspacePath: z.string(), instance: identitySchema, pid: pidSchema, url: z.string(), version: z.string() })).optional(),
+}).passthrough();
 
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; }
@@ -45,14 +66,21 @@ interface LockOwner { pid: number; boot: string }
 export class SessionRegistry {
   // Hosts launch MCP servers with different environments, some without TMPDIR,
   // so the shared file lives under the home directory every server can find.
-  constructor(private readonly directory = join(homedir(), 'Library', 'Caches', 'sim-stage'), private readonly pid = process.pid) {}
+  readonly instance: InstanceIdentity;
+  constructor(private readonly directory = join(homedir(), 'Library', 'Caches', 'sim-stage'), private readonly pid = process.pid, context: { label?: string; workspacePath?: string } = {}) {
+    const id = randomUUID();
+    this.instance = { id, label: context.label ?? `Sim Stage ${id.slice(0, 8)}`, ...(context.workspacePath ? { workspacePath: context.workspacePath } : {}) };
+  }
 
   private get file() { return join(this.directory, 'sessions.json'); }
 
   private async read(): Promise<RegistryState> {
     let state: Partial<RegistryState>;
-    try { state = JSON.parse(await readFile(this.file, 'utf8')) as Partial<RegistryState>; }
-    catch { state = {}; }
+    try { state = registrySchema.parse(JSON.parse(await readFile(this.file, 'utf8'))); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      state = {};
+    }
     // Xcode sessions and process IDs end with the boot; created simulators do not.
     const boot = await currentBoot();
     const sameBoot = state.boot === boot;
@@ -60,9 +88,11 @@ export class SessionRegistry {
     for (const [key, session] of Object.entries(sameBoot ? state.sessions ?? {} : {})) {
       // A crashed server leaves its hold behind; the device stays usable by whoever joins next.
       const holders = (session.holders ?? []).filter(holder => alive(holder.pid));
-      if (holders.length) sessions[key] = { ...session, holders };
+      sessions[key] = { ...session, holders };
     }
-    return { boot: sameBoot ? state.boot! : boot, sessions, created: state.created ?? [], ...(sameBoot && state.focus ? { focus: state.focus } : {}) };
+    const previews = Object.fromEntries(Object.entries(sameBoot ? state.previews ?? {} : {}).filter(([, preview]) => alive(preview.pid)));
+    // Preserve legacy/unknown metadata for older clients; current viewers never read global focus.
+    return { ...state, boot: sameBoot ? state.boot! : boot, sessions, created: state.created ?? [], previews, creators: state.creators ?? {} };
   }
 
   /** Atomic populated-directory locks carry a live process owner, never an age lease. */
@@ -110,6 +140,23 @@ export class SessionRegistry {
     return this.locked(name, transition);
   }
 
+  /** One launch/reuse decision for a canonical workspace, across processes. */
+  workspace<T>(path: string, transition: () => Promise<T>): Promise<T> {
+    return this.locked(`preview-${createHash('sha256').update(path).digest('hex')}`, transition);
+  }
+
+  async preview(path: string): Promise<PreviewRecord | undefined> {
+    return (await this.read()).previews[path];
+  }
+
+  async savePreview(record: PreviewRecord): Promise<void> {
+    await this.update(state => { state.previews[record.workspacePath] = record; });
+  }
+
+  async removePreview(path: string, instanceId: string): Promise<void> {
+    await this.update(state => { if (state.previews[path]?.instance.id === instanceId) delete state.previews[path]; });
+  }
+
   private async update<T>(change: (state: RegistryState) => T): Promise<T> {
     return this.locked('sessions', async () => {
       const state = await this.read();
@@ -126,7 +173,7 @@ export class SessionRegistry {
   }
 
   async forDevice(deviceId: string): Promise<SharedSession[]> {
-    return Object.values((await this.read()).sessions).filter(session => session.deviceId === deviceId);
+    return Object.values((await this.read()).sessions).filter(session => session.deviceId === deviceId && session.holders.length);
   }
 
   /** Forgets a session for every holder, once it has ended. */
@@ -138,7 +185,7 @@ export class SessionRegistry {
     await this.update(state => {
       const entry = state.sessions[session.key] ??= { ...session, holders: [] };
       entry.holders = entry.holders.filter(holder => !(holder.pid === this.pid && holder.sessionId === sessionId));
-      entry.holders.push({ pid: this.pid, sessionId, since: new Date().toISOString() });
+      entry.holders.push({ pid: this.pid, sessionId, since: new Date().toISOString(), instance: this.instance });
     });
   }
 
@@ -156,24 +203,16 @@ export class SessionRegistry {
   /** Sessions other Sim Stage servers hold, such as another chat or window. */
   async elsewhere(): Promise<SharedSession[]> {
     return Object.values((await this.read()).sessions)
-      .map(session => ({ ...session, holders: session.holders.filter(holder => holder.pid !== this.pid) }))
+      .map(session => ({ ...session, holders: session.holders.filter(holder => holder.instance ? holder.instance.id !== this.instance.id : holder.pid !== this.pid) }))
       .filter(session => session.holders.length);
   }
 
-  async setFocus(deviceId: string, deviceName: string): Promise<void> {
-    await this.update(state => { state.focus = { deviceId, deviceName, pid: this.pid, at: new Date().toISOString() }; });
-  }
-
-  async focus(): Promise<RegistryFocus | undefined> {
-    return (await this.read()).focus;
-  }
-
-  async clearFocus(deviceId: string): Promise<void> {
-    await this.update(state => { if (state.focus?.deviceId === deviceId) delete state.focus; });
-  }
-
   async markCreated(deviceId: string): Promise<void> {
-    await this.update(state => { if (!state.created.includes(deviceId)) state.created.push(deviceId); });
+    await this.update(state => {
+      if (state.created.includes(deviceId)) throw new Error('Simulator creation is already recorded.');
+      state.created.push(deviceId);
+      state.creators[deviceId] = { instance: this.instance, pid: this.pid, boot: state.boot };
+    });
   }
 
   async createdDevices(): Promise<string[]> {
@@ -181,6 +220,50 @@ export class SessionRegistry {
   }
 
   async forgetCreated(deviceId: string): Promise<void> {
-    await this.update(state => { state.created = state.created.filter(id => id !== deviceId); });
+    await this.update(state => { state.created = state.created.filter(id => id !== deviceId); delete state.creators[deviceId]; });
+  }
+
+  async creationOwnership(): Promise<Record<string, { owner?: InstanceIdentity; owned: boolean; abandoned: boolean }>> {
+    const state = await this.read();
+    return Object.fromEntries(state.created.map(id => {
+      const owner = state.creators[id];
+      return [id, { ...(owner ? { owner: owner.instance } : {}), owned: owner?.instance.id === this.instance.id, abandoned: !owner || owner.boot !== state.boot || !alive(owner.pid) }];
+    }));
+  }
+
+  /** Called inside the device lifecycle lock, before any native cleanup. */
+  async requireDeletionOwner(deviceId: string): Promise<void> {
+    const state = await this.read();
+    const creator = state.creators[deviceId];
+    if (!state.created.includes(deviceId) || creator?.instance.id !== this.instance.id) {
+      throw new DeviceConflictError('DEVICE_OWNERSHIP', deviceId, 'This instance does not own this simulator. Its owner must clean it up; use simulator_claim only for an abandoned Sim Stage device.', creator ? [creator.instance] : []);
+    }
+    const sessions = Object.values(state.sessions).filter(session => session.deviceId === deviceId);
+    if (sessions.some(session => session.foreign || session.holders.some(holder => holder.instance?.id !== this.instance.id))) {
+      throw new DeviceConflictError('DEVICE_BUSY', deviceId, 'Another instance or tool still holds this simulator. Disconnect those sessions before deleting it.');
+    }
+  }
+
+  /** Explicit recovery of a recorded disposable device; never claims user devices. */
+  async claimCreated(deviceId: string): Promise<void> {
+    await this.update(state => {
+      if (!state.created.includes(deviceId)) throw new DeviceConflictError('DEVICE_OWNERSHIP', deviceId, 'Only a simulator previously created by Sim Stage can be claimed.');
+      if (Object.values(state.sessions).some(session => session.deviceId === deviceId && (session.holders.length || session.foreign))) {
+        throw new DeviceConflictError('DEVICE_BUSY', deviceId, 'Disconnect all sessions before claiming this simulator.');
+      }
+      const creator = state.creators[deviceId];
+      if (creator && creator.instance.id !== this.instance.id && creator.boot === state.boot && alive(creator.pid)) {
+        throw new DeviceConflictError('DEVICE_OWNERSHIP', deviceId, 'The creating instance is still running. It retains ownership.', [creator.instance]);
+      }
+      state.creators[deviceId] = { instance: this.instance, pid: this.pid, boot: state.boot };
+    });
+  }
+}
+
+/** Expected conflicts are structured so clients can offer an explicit next action. */
+export class DeviceConflictError extends Error {
+  constructor(readonly code: 'DEVICE_BUSY' | 'DEVICE_OWNERSHIP', readonly deviceId: string, message: string, readonly owners: InstanceIdentity[] = []) {
+    super(message);
+    this.name = 'DeviceConflictError';
   }
 }

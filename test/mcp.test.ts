@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { callHubTool, captureResult, createHubServer, DATA_META_KEY, HIERARCHY_META_KEY, UI_URI, type Hub } from "../src/mcp.js";
 import type { Capture, Device, Session } from "../src/shared.js";
 import { SessionExpiredError } from "../src/apple.js";
+import { DeviceConflictError } from "../src/session-registry.js";
 
 const session: Session = { id: "16764887-9da3-43ed-85d4-a372838d5a70", device: { id: "simulator-one", name: "Test iPhone", kind: "simulator", platform: "iOS", runtime: "iOS 27", state: "Booted", available: true }, accessibilityEnabled: true };
 function frame(enabled = true): Capture {
@@ -17,6 +18,7 @@ function fakeHub(): { hub: Hub; calls: unknown[] } {
     async status() { return { devices: [session.device], sessions: [], warnings: [] }; },
     async connect(id, options) { calls.push(["connect", id, ...(options && Object.keys(options).length ? [options] : [])]); return { ...session, origin: "new" as const, observation: frame() }; },
     async createSimulator(options) { calls.push(["createSimulator", options]); return created; },
+    async claimSimulator(id) { calls.push(["claimSimulator", id]); return { ...created, id, ownedByInstance: true }; },
     async deleteSimulator(id) { calls.push(["deleteSimulator", id]); return { ...created, id }; },
     async capture(id, options) { calls.push(["capture", id, options]); return frame(options?.accessibilityEnabled ?? true); },
     async frame(id) { calls.push(["frame", id]); return { ...frame(false), screenshot: { mimeType: "image/jpeg", data: "frame-base64", width: 644, height: 1400 } }; },
@@ -194,6 +196,24 @@ test("expired session results give the app a precise reconnect signal for the af
   const result = await callHubTool(hub, "device_capture", { sessionId: session.id });
   assert.equal(result.isError, true);
   assert.deepEqual(result._meta, { errorCode: "SESSION_EXPIRED", sessionId: session.id });
+});
+
+test("busy-device results carry explicit choices and sharing and ownership recovery reach the hub", async () => {
+  const { hub, calls } = fakeHub();
+  const connect = hub.connect;
+  hub.connect = async (id, options) => {
+    if (!options?.share) throw new DeviceConflictError("DEVICE_BUSY", id, "Device in use", [{ id: "other", label: "Other worktree" }]);
+    return connect(id, options);
+  };
+  const refused = await callHubTool(hub, "device_connect", { deviceId: session.device.id });
+  assert.equal(refused.isError, true);
+  assert.deepEqual(refused._meta, { errorCode: "DEVICE_BUSY", deviceId: session.device.id, owners: [{ id: "other", label: "Other worktree" }], choices: ["choose-device", "create-simulator", "share-control"] });
+  assert.deepEqual(calls, []);
+  assert.equal((await callHubTool(hub, "device_connect", { deviceId: session.device.id, share: true })).isError, undefined);
+  assert.equal((await callHubTool(hub, "simulator_claim", { deviceId: created.id })).isError, undefined);
+  assert.deepEqual(calls, [["connect", session.device.id, { share: true }], ["claimSimulator", created.id]]);
+  hub.deleteSimulator = async id => { throw new DeviceConflictError("DEVICE_BUSY", id, "Still held"); };
+  assert.equal((await callHubTool(hub, "simulator_delete", { deviceId: created.id }))._meta?.choices, undefined, "a cleanup conflict must never offer shared control as a fix");
 });
 
 test("MCP discovery advertises native host entrypoints and opening accepts empty arguments", async () => {

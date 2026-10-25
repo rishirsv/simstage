@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const requiredTools = ["open_sim_stage", "sim_stage_preferences", "sim_stage_status", "device_connect", "device_capture", "device_action", "device_settings", "device_disconnect", "device_stream", "device_stream_read", "device_stream_stop", "device_input", "simulator_get_state", "simulator_click"];
+const requiredTools = ["open_sim_stage", "sim_stage_preferences", "sim_stage_status", "device_connect", "device_capture", "device_action", "device_settings", "device_disconnect", "device_stream", "device_stream_read", "device_stream_stop", "device_input", "simulator_get_state", "simulator_click", "simulator_create", "simulator_claim", "simulator_delete"];
 
 /** Exercise the delivered artifact from an unrelated directory, through stdio. */
 export async function smokeArtifact({ name, version, command, args, cwd, additionalTools = [] }) {
@@ -29,6 +29,7 @@ export async function smokeArtifact({ name, version, command, args, cwd, additio
       }
     }
     for (const required of [...requiredTools, ...additionalTools]) assert.ok(tools.some(tool => tool.name === required), `Missing required tool ${required}`);
+    assert.equal(tools.find(tool => tool.name === "device_connect").inputSchema.properties.share.type, "boolean", "Packaged connections must support explicit sharing");
     const opener = tools.find(tool => tool.name === "open_sim_stage");
     const settings = tools.find(tool => tool.name === "sim_stage_preferences");
     assert.deepEqual(opener.icons, serverInfo.icons, "Sidebar entrypoint must carry the bundled phone icons");

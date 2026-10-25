@@ -20,6 +20,9 @@ export const deviceSchema = z.object({
   available: z.boolean(),
   /** A simulator Sim Stage created, which simulator_delete may remove. */
   createdByHub: z.boolean().optional(),
+  ownedByInstance: z.boolean().optional(),
+  creationOwner: z.object({ id: z.string(), label: z.string(), workspacePath: z.string().optional() }).optional(),
+  abandoned: z.boolean().optional(),
 });
 export type Device = z.infer<typeof deviceSchema>;
 
@@ -30,17 +33,21 @@ export const sessionSchema = z.object({
 });
 export type Session = z.infer<typeof sessionSchema>;
 
+/** Public identity of one server. Workspace paths stay on this machine. */
+export interface InstanceIdentity { id: string; label: string; workspacePath?: string }
+
 /** A device session another Sim Stage server holds, such as another chat or window. */
 export interface SharedDevice {
   deviceId: string;
   deviceName: string;
   /** Sim Stage servers sharing it. */
   holders: number;
+  owners?: InstanceIdentity[];
   /** The session was started by another tool and joined with takeOver. */
   otherTool?: boolean;
 }
 
-/** The device most recently connected by any Sim Stage server; viewers follow it. */
+/** The device most recently connected by this Sim Stage server; viewers follow it. */
 export interface DeviceFocus { deviceId: string; deviceName: string; at: string }
 
 /** How device_connect obtained its session. */
@@ -53,6 +60,7 @@ export interface HubState {
   warnings: string[];
   elsewhere?: SharedDevice[];
   focus?: DeviceFocus;
+  instance?: InstanceIdentity;
 }
 
 export interface Screenshot {
@@ -80,7 +88,7 @@ export interface Capture {
   snapshot?: number;
   bundleId?: string;
   elements?: ScreenElement[];
-  /** On live frames: another device the agent connected since; the viewer follows it. */
+  /** On live frames: another device this server connected since; the viewer follows it. */
   focus?: DeviceFocus;
 }
 

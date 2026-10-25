@@ -31,7 +31,7 @@ export interface VideoBatch {
   active: true;
   /** Device actions since the previous batch, added by the hub. */
   activity?: DeviceActivity[];
-  /** Another device the agent connected since; the viewer follows it. */
+  /** Another device this server connected since; the viewer follows it. */
   focus?: DeviceFocus;
 }
 
