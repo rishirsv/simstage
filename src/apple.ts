@@ -11,7 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { resolveElement, summarizeHierarchy, type Rect, type ScreenElement } from './elements.js';
 import { actionSchema, settingsSchema, textSizeSchema, type Capture, type ConnectedSession, type Device, type DeviceAction, type DeviceActivity, type DeviceFocus, type DeviceSettings, type ElementTarget, type HubState, type LiveInput, type ScreenshotMode, type Session, type SessionOrigin } from './shared.js';
-import { SessionRegistry } from './session-registry.js';
+import { DeviceConflictError, SessionRegistry } from './session-registry.js';
 import { SimulatorObserver } from './simulator-observer.js';
 import { SimulatorVideo, type VideoBatch, type VideoStream } from './video.js';
 
@@ -339,6 +339,8 @@ export interface AppleHubOptions {
 export interface ConnectOptions {
   /** Join a session another tool holds on the device. */
   takeOver?: boolean;
+  /** Explicitly share control with another live Sim Stage server. */
+  share?: boolean;
 }
 
 export interface CreateSimulatorOptions {
@@ -364,8 +366,8 @@ export class AppleHub {
   private readonly sessions = new Map<string, NativeSession>();
   private readonly connecting = new Map<string, Promise<ConnectedSession>>();
   private readonly registry: SessionRegistry;
-  /** The registry's focus, re-read at most once a second because video reads ask for it at frame rate. */
-  private focusCache?: { value?: DeviceFocus; readAt: number; reading?: Promise<void> };
+  /** Selection belongs to this server; native session coordination stays machine-wide. */
+  private focus?: DeviceFocus;
   private closed = false;
   private closing?: Promise<void>;
   private snapshots = 0;
@@ -504,7 +506,7 @@ export class AppleHub {
     const [simulators, physical, created] = await Promise.allSettled([
       simulatorQuery,
       physicalQuery,
-      this.registry.createdDevices(),
+      this.registry.creationOwnership(),
     ]);
     const devices: Device[] = [];
     const warnings: string[] = [];
@@ -512,21 +514,25 @@ export class AppleHub {
       if (result.status === 'fulfilled') devices.push(...result.value);
       else warnings.push(`${index === 0 ? 'Simulator' : 'Physical device'} discovery failed: ${String(result.reason)}`);
     });
-    const ours = new Set(created.status === 'fulfilled' ? created.value : []);
-    return { devices: devices.map(device => ours.has(device.id) ? { ...device, createdByHub: true } : device), warnings };
+    if (created.status === 'rejected') warnings.push('Simulator ownership records could not be read. Creation and cleanup may be unavailable.');
+    const ownership = created.status === 'fulfilled' ? created.value : {};
+    return { devices: devices.map(device => {
+      const entry = ownership[device.id];
+      return entry ? { ...device, createdByHub: true, ownedByInstance: entry.owned, abandoned: entry.abandoned, ...(entry.owner ? { creationOwner: entry.owner } : {}) } : device;
+    }), warnings };
   }
 
   async status(): Promise<HubState> {
-    const [discovered, elsewhere, focus] = await Promise.all([
+    const [discovered, elsewhere] = await Promise.all([
       this.deviceList(),
       this.registry.elsewhere().catch(() => []),
-      this.registry.focus().catch(() => undefined),
     ]);
     return {
       ...discovered,
       sessions: [...this.sessions.values()].filter((session) => !session.closing).map((session) => this.publicSession(session)),
-      elsewhere: elsewhere.map(session => ({ deviceId: session.deviceId, deviceName: session.deviceName, holders: session.holders.length, ...(session.foreign ? { otherTool: true } : {}) })),
-      ...(focus ? { focus: { deviceId: focus.deviceId, deviceName: focus.deviceName, at: focus.at } } : {}),
+      instance: { ...this.registry.instance },
+      elsewhere: elsewhere.map(session => ({ deviceId: session.deviceId, deviceName: session.deviceName, holders: session.holders.length, owners: session.holders.flatMap(holder => holder.instance ? [holder.instance] : []), ...(session.foreign ? { otherTool: true } : {}) })),
+      ...(this.focus ? { focus: { ...this.focus } } : {}),
     };
   }
 
@@ -550,7 +556,7 @@ export class AppleHub {
     finally { this.connecting.delete(deviceId); }
   }
 
-  private async startSession(deviceId: string, { takeOver = false }: ConnectOptions, retried = false): Promise<ConnectedSession> {
+  private async startSession(deviceId: string, { takeOver = false, share = false }: ConnectOptions, retried = false): Promise<ConnectedSession> {
     const { devices, warnings } = await this.deviceList(deviceId);
     if (this.closed) throw new Error('Sim Stage is closed.');
     const device = devices.find((candidate) => candidate.id === deviceId);
@@ -559,6 +565,11 @@ export class AppleHub {
     const sessionId = randomUUID();
     const session = await this.registry.lifecycle(deviceId, async () => {
       if (this.closed) throw new Error('Sim Stage is closed.');
+      const active = await this.registry.forDevice(deviceId);
+      const owners = active.flatMap(entry => entry.holders.filter(holder => holder.instance?.id !== this.registry.instance.id));
+      if (owners.length && !share) {
+        throw new DeviceConflictError('DEVICE_BUSY', deviceId, `${device.name} is in use by another Sim Stage instance. Choose another device, create a simulator, or explicitly connect with share: true.`, owners.flatMap(holder => holder.instance ? [holder.instance] : []));
+      }
       // Xcode's interaction task can time out while a fresh device is booting.
       if (device.kind === 'simulator') await this.boundary.command(['simctl', 'bootstatus', device.id, '-b'], BOOT_TIMEOUT_MS);
       let key: string;
@@ -573,10 +584,14 @@ export class AppleHub {
         // Xcode allows one session per device and names the session holding it.
         const holder = error instanceof Error ? error.message.match(/in use by a different session with key '([^']+)'/)?.[1] : undefined;
         if (!holder) throw error;
-        const shared = await this.registry.find(holder).catch(() => undefined);
+        const shared = await this.registry.find(holder);
+        if (shared && shared.deviceId !== deviceId) throw new Error("Native session belongs to a different device.");
         origin = shared ? (shared.foreign ? 'other-tool' : 'sim-stage') : /^Sim Stage [0-9A-F]{8}$/.test(holder) ? 'sim-stage' : 'other-tool';
-        if (origin === 'other-tool' && !shared && !takeOver) {
-          throw new Error(`${device.name} is in use by another tool's Xcode session, “${holder}”. Ask the user before taking it over: device_connect with takeOver: true joins that session so both can drive the device. Sim Stage never ends a session it did not start.`);
+        if (origin === 'other-tool' && !takeOver) {
+          throw new Error(`${device.name} is in use by another tool's Xcode session. Ask the user before taking it over: device_connect with takeOver: true joins that session so both can drive the device. Sim Stage never ends a session it did not start.`);
+        }
+        if (origin === 'sim-stage' && !shared && !share) {
+          throw new DeviceConflictError('DEVICE_BUSY', deviceId, `${device.name} has an untracked Sim Stage session. Explicitly connect with share: true, or choose another device.`);
         }
         key = holder;
       }
@@ -606,25 +621,18 @@ export class AppleHub {
     } catch (error) {
       await this.disconnect(session.public.id).catch(() => {});
       // A joined session can end between Xcode naming it and the first observation.
-      if (error instanceof SessionExpiredError && origin !== 'new' && !retried && !this.closed) return this.startSession(deviceId, { takeOver }, true);
+      if (error instanceof SessionExpiredError && origin !== 'new' && !retried && !this.closed) return this.startSession(deviceId, { takeOver, share }, true);
       throw error;
     }
   }
 
   private async focusOn(device: Device) {
-    this.focusCache = { value: { deviceId: device.id, deviceName: device.name, at: new Date().toISOString() }, readAt: Date.now() };
-    await this.registry.setFocus(device.id, device.name).catch(() => {});
+    this.focus = { deviceId: device.id, deviceName: device.name, at: new Date().toISOString() };
   }
 
-  /** The device the agent connected most recently, when it is not this session's. */
+  /** Only selections made through this server can move its viewers. */
   private otherFocus(session: NativeSession): DeviceFocus | undefined {
-    const cache = this.focusCache ??= { readAt: 0 };
-    if (Date.now() - cache.readAt > 1000 && !cache.reading) {
-      cache.reading = this.registry.focus().then(focus => {
-        cache.value = focus && { deviceId: focus.deviceId, deviceName: focus.deviceName, at: focus.at };
-      }, () => {}).finally(() => { cache.readAt = Date.now(); cache.reading = undefined; });
-    }
-    return cache.value && cache.value.deviceId !== session.public.device.id ? cache.value : undefined;
+    return this.focus && this.focus.deviceId !== session.public.device.id ? { ...this.focus } : undefined;
   }
 
   /** Xcode ended the session, through another tool or a restart, so there is nothing left to end. */
@@ -664,31 +672,32 @@ export class AppleHub {
     return device;
   }
 
-  /**
-   * Deletes a simulator this hub created; any other simulator belongs to the
-   * user. Its session ends for every holder, so a viewer in another chat or
-   * window that followed it reports the session ended on its next request.
-   */
+  async claimSimulator(deviceId: string): Promise<Device> {
+    const device = (await this.deviceList()).devices.find(candidate => candidate.id === deviceId && candidate.kind === 'simulator');
+    if (!device) throw new Error('That simulator is not in the device list.');
+    await this.registry.lifecycle(deviceId, () => this.registry.claimCreated(deviceId));
+    return { ...device, createdByHub: true, ownedByInstance: true, abandoned: false, creationOwner: this.registry.instance };
+  }
+
+  /** Deletes only this instance's disposable simulator, without foreign holders. */
   async deleteSimulator(deviceId: string): Promise<Device> {
     const device = (await this.deviceList()).devices.find(candidate => candidate.id === deviceId && candidate.kind === 'simulator');
     if (!device) throw new Error('That simulator is not in the device list.');
     if (!device.createdByHub) throw new Error(`${device.name} was not created by Sim Stage, so Sim Stage will not delete it.`);
+    // Check foreign ownership before releasing even our own view of the device.
+    await this.registry.lifecycle(deviceId, () => this.registry.requireDeletionOwner(deviceId));
+    await Promise.all([...this.sessions.values()].filter(session => session.public.device.id === deviceId).map(session => this.disconnect(session.public.id)));
     await this.registry.lifecycle(deviceId, async () => {
-      const local = [...this.sessions.values()].filter(session => session.public.device.id === deviceId);
-      const shared = await this.registry.forDevice(deviceId);
-      const owned = new Set([...local.filter(session => session.origin !== 'other-tool').map(session => session.key), ...shared.filter(session => !session.foreign).map(session => session.key)]);
-      for (const key of owned) {
-        await this.boundary.tool('DeviceInteractionEndSession', { interactionSessionKey: key }).catch(() => {});
-        await this.registry.drop(key);
-      }
-      for (const session of local) this.expire(session);
-      if (device.state !== 'Shutdown') await this.boundary.command(['simctl', 'shutdown', deviceId], 60_000).catch(() => {});
+      await this.registry.requireDeletionOwner(deviceId);
+      // A connection may have completed while local queues were draining.
+      if ((await this.registry.forDevice(deviceId)).length) throw new DeviceConflictError('DEVICE_BUSY', deviceId, 'The simulator was reconnected during cleanup. Disconnect it and retry.');
+      if (device.state !== 'Shutdown') await this.boundary.command(['simctl', 'shutdown', deviceId], 60_000);
       await this.boundary.command(['simctl', 'delete', deviceId], 60_000);
       this.knownSimulatorIds.delete(deviceId);
+      this.simulatorDiscovery = undefined;
+      await this.registry.forgetCreated(deviceId);
     });
-    await this.registry.forgetCreated(deviceId);
-    await this.registry.clearFocus(deviceId);
-    if (this.focusCache?.value?.deviceId === deviceId) this.focusCache = undefined;
+    if (this.focus?.deviceId === deviceId) this.focus = undefined;
     return device;
   }
 

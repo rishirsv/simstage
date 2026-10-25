@@ -7,6 +7,7 @@ import { ListToolsRequestSchema, type CallToolResult, type Icon, type Tool } fro
 import { registerAppTool, registerAppResource, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import type { OpenAIUiToolMetadata } from "@openai/mcp-extensions/server";
 import type { AppleHub } from "./apple.js";
+import { DeviceConflictError } from './session-registry.js';
 import { SessionExpiredError } from "./apple.js";
 import { formatElement, redactSecureFieldValues } from "./elements.js";
 import { actionSchema, DATA_META_KEY, HIERARCHY_META_KEY, liveInputSchema, settingsSchema, type Capture, type CaptureState, type ConnectedSession, type Device, type HubState } from "./shared.js";
@@ -18,7 +19,7 @@ const icons: Icon[] = (["light", "dark"] as const).map(theme => ({
   src: `data:image/svg+xml;base64,${Buffer.from(sidebarIcon).toString("base64")}`,
   mimeType: "image/svg+xml", sizes: ["any"], theme,
 }));
-export type Hub = Pick<AppleHub, "status" | "connect" | "capture" | "frame" | "stream" | "streamRead" | "streamStop" | "input" | "action" | "settings" | "disconnect" | "createSimulator" | "deleteSimulator" | "close">;
+export type Hub = Pick<AppleHub, "status" | "connect" | "capture" | "frame" | "stream" | "streamRead" | "streamStop" | "input" | "action" | "settings" | "disconnect" | "createSimulator" | "deleteSimulator" | "claimSimulator" | "close">;
 const deviceId = z.string().min(1).max(200);
 const sessionId = z.string().uuid();
 const resolution = z.enum(["points", "full"]).optional().describe("Image size. Leave unset: the default sizes the screenshot in logical points so image pixels equal tap coordinates.");
@@ -29,7 +30,8 @@ export const toolInputs = {
   sim_stage_status: z.object({}),
   device_connect: z.object({
     deviceId,
-    takeOver: z.boolean().optional().describe("Join a session another tool holds on this device. Ask the user first; sessions from other Sim Stage chats or windows are joined without it."),
+    share: z.boolean().optional().describe("Explicitly share control of a device held by another Sim Stage instance. Both can send input. Defaults to refusing a busy device."),
+    takeOver: z.boolean().optional().describe("Join a session another tool holds on this device. Ask the user first. Sharing a live Sim Stage instance also requires share: true."),
   }),
   simulator_create: z.object({
     deviceType: z.string().min(1).max(200).optional().describe("Simulator type such as \"iPhone 17 Pro\" or \"iPad Air 13-inch (M4)\"; an unknown name lists the choices."),
@@ -39,6 +41,7 @@ export const toolInputs = {
     connect: z.boolean().default(true).describe("Boot the simulator and open a session (default true)."),
   }).refine(value => Boolean(value.deviceType) !== Boolean(value.cloneFrom), "Choose either deviceType or cloneFrom."),
   simulator_delete: z.object({ deviceId }),
+  simulator_claim: z.object({ deviceId }),
   device_capture: z.object({ sessionId, background: z.boolean().optional(), accessibilityEnabled: z.boolean().optional(), resolution, screenshot: screenshotOption }),
   device_frame: z.object({ sessionId }),
   device_stream: z.object({ sessionId, codec: z.enum(["hevc", "h264"]).default("h264"), maxDimension: z.number().int().min(320).max(8192).optional().describe("Longest encoded edge in pixels; the simulator's resolution when larger or unset.") }),
@@ -99,24 +102,24 @@ function textResult(text: string, data: object): CallToolResult {
   return { content: [{ type: "text", text }], _meta: { [DATA_META_KEY]: data } };
 }
 
-const deviceLine = (device: Device) => `${device.name} · ${device.runtime || device.platform}${device.kind === "device" ? " · physical device" : ""} · id ${device.id}${device.createdByHub ? " · created by Sim Stage" : ""}`;
+const deviceLine = (device: Device) => `${device.name} · ${device.runtime || device.platform}${device.kind === "device" ? " · physical device" : ""} · id ${device.id}${device.createdByHub ? device.ownedByInstance ? " · owned by this instance" : device.abandoned ? " · abandoned; simulator_claim required for cleanup" : ` · created by ${device.creationOwner?.label ?? "another Sim Stage instance"}` : ""}`;
 const newestFirst = (left: Device, right: Device) => right.runtime.localeCompare(left.runtime, undefined, { numeric: true }) || left.name.localeCompare(right.name, undefined, { numeric: true });
 
 /** What the model needs to pick, join or create a session, without the full device JSON. */
 export function describeHub(state: HubState): string {
-  const lines: string[] = [];
+  const lines: string[] = state.instance ? [`Instance: ${state.instance.label} · ${state.instance.id}${state.instance.workspacePath ? ` · workspace ${state.instance.workspacePath}` : ""}`] : [];
   const connected = new Set(state.sessions.map(session => session.device.id));
   const shared = new Set(state.elsewhere?.map(session => session.deviceId));
   if (state.sessions.length) {
     lines.push("Sessions on this server (pass the session ID to other tools):", ...state.sessions.map(session =>
       `- ${session.device.name} (${session.device.kind}, ${session.device.runtime}) · session ${session.id}${state.focus?.deviceId === session.device.id ? " · shown in the viewer" : ""}${shared.has(session.device.id) ? " · shared with another chat or window" : ""}`));
   } else {
-    lines.push("No sessions on this server. device_connect opens one, or joins one already open in another chat or window.");
+    lines.push("No sessions on this server. device_connect opens one; a busy device requires explicit share: true.");
   }
   const elsewhere = state.elsewhere?.filter(session => !connected.has(session.deviceId)) ?? [];
   if (elsewhere.length) {
-    lines.push("", "Open in another Sim Stage chat or window (device_connect joins and shares it):", ...elsewhere.map(session =>
-      `- ${session.deviceName} · id ${session.deviceId}${session.otherTool ? " · taken over from another tool" : ""}`));
+    lines.push("", "Open in another Sim Stage instance (share: true explicitly shares control):", ...elsewhere.map(session =>
+      `- ${session.deviceName} · id ${session.deviceId}${session.owners?.length ? ` · ${session.owners.map(owner => owner.label).join(", ")}` : ""}${session.otherTool ? " · taken over from another tool" : ""}`));
   }
   const available = state.devices.filter(device => device.available && !connected.has(device.id));
   const running = available.filter(device => device.kind === "simulator" ? device.state === "Booted" : /connected/i.test(device.state));
@@ -162,7 +165,7 @@ export async function callHubTool(hub: Hub, name: string, args: unknown): Promis
       }
       case "device_connect": {
         const input = toolInputs.device_connect.parse(args);
-        const session = await hub.connect(input.deviceId, input.takeOver ? { takeOver: true } : {});
+        const session = await hub.connect(input.deviceId, { ...(input.takeOver ? { takeOver: true } : {}), ...(input.share ? { share: true } : {}) });
         return connectionResult(session);
       }
       case "simulator_create": {
@@ -177,6 +180,11 @@ export async function callHubTool(hub: Hub, name: string, args: unknown): Promis
         const input = toolInputs.simulator_delete.parse(args);
         const device = await hub.deleteSimulator(input.deviceId);
         return textResult(`Deleted ${device.name}.`, { deviceId: device.id, deleted: true });
+      }
+      case "simulator_claim": {
+        const input = toolInputs.simulator_claim.parse(args);
+        const device = await hub.claimSimulator(input.deviceId);
+        return textResult(`Claimed abandoned simulator ${device.name}. This instance is now responsible for its cleanup.`, { device });
       }
       case "device_capture": {
         const input = toolInputs.device_capture.parse(args);
@@ -237,6 +245,7 @@ export async function callHubTool(hub: Hub, name: string, args: unknown): Promis
     return {
       isError: true,
       content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+      ...(error instanceof DeviceConflictError ? { _meta: { errorCode: error.code, deviceId: error.deviceId, owners: error.owners, ...(error.code === "DEVICE_BUSY" && name === "device_connect" ? { choices: ["choose-device", "create-simulator", "share-control"] } : {}) } } : {}),
       ...(error instanceof SessionExpiredError ? { _meta: { errorCode: error.code, sessionId: (args as { sessionId: string }).sessionId } } : {}),
     };
   }
@@ -248,15 +257,16 @@ export async function appHtml(assetRoot: URL, preview = false): Promise<string> 
 }
 
 export function createHubServer(hub: Hub, assetRoot: URL): McpServer {
-  const server = new McpServer({ name: "sim-stage", version, icons }, { instructions: "Use open_sim_stage to show the device viewer. sim_stage_status lists sessions on this server, devices open in other Sim Stage chats or windows, and every device. Reuse a listed session ID, or device_connect a device: it boots a stopped simulator, reuses this server's session, or joins the one another chat or window holds, and the viewer follows it. To keep testing off the user's own simulator, simulator_create makes a fresh one (or clones a shut-down one); simulator_delete removes it afterwards. Observe before acting. Work in small verified steps: observe, act on one element by ref, then read the returned screen to confirm the result before the next step. Results are text-first: the element list describes the screen, and with the default screenshot: \"auto\" an image is attached only when the elements cannot describe it. Pass screenshot: \"always\" to judge layout, color or images. Coordinates are logical device points in coordinateSpace. accessibilityEnabled controls whether elements are exposed; it does not change iOS accessibility settings. Device operations pass through Apple's Xcode bridge. Restore changed settings and disconnect sessions when finished." });
+  const server = new McpServer({ name: "sim-stage", version, icons }, { instructions: "Use open_sim_stage to show the device viewer. sim_stage_status lists sessions on this server, devices open in other Sim Stage chats or windows, and every device. Reuse a listed session ID, or device_connect a device: it boots a stopped simulator, reuses this server's session, or explicitly shares a busy device with share: true. Viewer selections stay on this server. To keep testing off the user's own simulator, simulator_create makes a fresh one (or clones a shut-down one); simulator_delete removes it afterwards. Observe before acting. Work in small verified steps: observe, act on one element by ref, then read the returned screen to confirm the result before the next step. Results are text-first: the element list describes the screen, and with the default screenshot: \"auto\" an image is attached only when the elements cannot describe it. Pass screenshot: \"always\" to judge layout, color or images. Coordinates are logical device points in coordinateSpace. accessibilityEnabled controls whether elements are exposed; it does not change iOS accessibility settings. Device operations pass through Apple's Xcode bridge. Restore changed settings and disconnect sessions when finished." });
   registerAppResource(server, "Sim Stage", UI_URI, {}, async () => ({ contents: [{ uri: UI_URI, mimeType: RESOURCE_MIME_TYPE, text: await appHtml(assetRoot), _meta: { ui: { prefersBorder: false, csp: { connectDomains: [], resourceDomains: [], frameDomains: [] } } } }] }));
   const definitions: { name: ToolName; title: string; description: string; readOnly: boolean; destructive?: boolean; openWorld?: boolean; appOnly?: boolean; opening?: OpenAIUiToolMetadata }[] = [
     { name: "open_sim_stage", title: "Sim Stage", description: "Open the local Sim Stage. View and control simulators or connected Apple devices beside the conversation.", readOnly: true, opening: { entrypoints: [{ type: "global" }, { type: "thread" }], preferredModelDisplayMode: "fullscreen" } },
     { name: "sim_stage_preferences", title: "Sim Stage settings", description: "Open Sim Stage device and accessibility controls.", readOnly: true, opening: { entrypoints: [{ type: "settings", searchTerms: ["device", "simulator", "accessibility"] }] } },
     { name: "sim_stage_status", title: "List Apple devices", description: "List sessions open on this server (reuse their session IDs), devices open in other Sim Stage chats or windows, running devices, shut-down simulators and paired physical devices. Physical-device availability reflects discovery and pairing; device_connect confirms Apple's interaction eligibility.", readOnly: true },
-    { name: "device_connect", title: "Connect device", description: "Open an interaction session on a device ID from sim_stage_status and show it in the viewer. Boots a stopped simulator. If this server already has a session for the device, returns it; if another Sim Stage chat or window holds the device, joins and shares that session. A device held by another tool needs takeOver: true, after asking the user. Returns a session ID for the other tools; Xcode's session key stays on the server.", readOnly: false, destructive: true },
+    { name: "device_connect", title: "Connect device", description: "Open an interaction session on a device ID from sim_stage_status and show it in the viewer. Boots a stopped simulator. If this server already has a session for the device, returns it; if another Sim Stage instance holds the device, refuses by default. Only share: true explicitly joins for shared control. A device held by another tool needs takeOver: true, after asking the user. Returns a session ID for the other tools; Xcode's session key stays on the server.", readOnly: false, destructive: true },
     { name: "simulator_create", title: "Create simulator", description: "Create a new simulator by device type (for example \"iPhone 17 Pro\"), optionally on a specific runtime, or clone a shut-down simulator with its apps and data. By default it boots the simulator and opens a session, returning the session ID. Use it to test without disturbing the user's own simulators.", readOnly: false },
-    { name: "simulator_delete", title: "Delete simulator", description: "End its sessions, shut down and delete a simulator that Sim Stage created with simulator_create, including in viewers that followed it. Refuses any other simulator.", readOnly: false, destructive: true },
+    { name: "simulator_claim", title: "Claim abandoned simulator", description: "Explicitly claim cleanup ownership of a simulator previously created by Sim Stage. Refuses a live creator, any active session, or a device not recorded as created by Sim Stage. Does not boot or erase the device. Inspect its ID and abandonment status first.", readOnly: false, destructive: false },
+    { name: "simulator_delete", title: "Delete simulator", description: "Delete a disposable simulator owned by this instance. Refuses user devices, another creator, or any foreign holder. Disconnects local sessions before exact-device shutdown and deletion. Recover abandoned Sim Stage devices explicitly with simulator_claim.", readOnly: false, destructive: true },
     { name: "device_capture", title: "Capture device screen", description: "Observe the device: returns the on-screen accessibility elements (role, label, identifier, value, tap point) as text, plus a screenshot sized in logical points when the elements cannot describe the screen or screenshot is \"always\". Call this before acting, then act on elements by ref with device_action. accessibilityEnabled shows or hides elements and saves that preference for this viewer session; it does not change VoiceOver.", readOnly: false, destructive: true },
     { name: "device_frame", title: "Stream device frame", description: "Return a compressed screen-only frame for the live viewer. No accessibility hierarchy or settings.", readOnly: true, appOnly: true },
     { name: "device_stream", title: "Stream simulator video", description: "Start a stateful live hardware HEVC or H.264 simulator video connection for the viewer. Accessibility and device actions continue through MCP tools.", readOnly: false, appOnly: true },

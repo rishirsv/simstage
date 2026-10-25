@@ -36,6 +36,7 @@ let videoReady = false;
 let settingsOpen = false;
 let hub: HubState = { devices: [], sessions: [], warnings: [] };
 let session: Session | undefined;
+let busyDevice: { deviceId: string } | undefined;
 let capture: CaptureState | undefined;
 let screenImage: ScreenImage | undefined;
 let busy = false;
@@ -62,6 +63,7 @@ let videoSizeFloor: number | undefined;
 let coordinateRefreshPending = false;
 let lastCoordinateRefresh = 0;
 let disconnecting = false;
+let manuallyDisconnected = false;
 // Live frames run outside run() so they never lock controls; a user action bumps
 // the generation so any frame requested before it cannot overwrite its result.
 let streaming = false;
@@ -90,6 +92,7 @@ let activity: DeviceActivity | undefined;
 export interface ViewerState {
   hub: HubState;
   session?: Session;
+  busyDevice?: { deviceId: string };
   capture?: CaptureState;
   selectedDeviceId: string;
   initialized: boolean;
@@ -125,7 +128,7 @@ export const subscribe = (listener: () => void) => { listeners.add(listener); re
 export const getSnapshot = () => snapshot;
 
 function publish(patch: Partial<ViewerState> = {}) {
-  snapshot = { ...snapshot, hub, session, capture, selectedDeviceId, initialized, busy, ended, liveEnabled, videoReady, liveInput: liveInputReady(), videoFps, videoCodec, activity, videoDimensions, settings: observedSettings, contextEnabled, ...patch };
+  snapshot = { ...snapshot, hub, session, busyDevice, capture, selectedDeviceId, initialized, busy, ended, liveEnabled, videoReady, liveInput: liveInputReady(), videoFps, videoCodec, activity, videoDimensions, settings: observedSettings, contextEnabled, ...patch };
   listeners.forEach(listener => listener());
 }
 
@@ -165,6 +168,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
     throw new Error("Viewer attachment ended.");
   }
   if (result.isError) {
+    if (result._meta?.errorCode === "DEVICE_BUSY" && Array.isArray(result._meta.choices) && result._meta.choices.includes("share-control") && typeof result._meta.deviceId === "string") busyDevice = { deviceId: result._meta.deviceId };
     if (result._meta?.errorCode === "SESSION_EXPIRED" && result._meta.sessionId === session?.id) clearSession();
     throw new Error(resultError(result));
   }
@@ -599,17 +603,12 @@ function applyHub(next: HubState) {
     if (retained) selectSession(retained);
     else clearSession();
   }
-  if (!session) {
+  if (!session && (!manuallyDisconnected || (next.focus && next.focus.at > focusHandledAt))) {
     const focus = next.focus;
     const focused = focus && hub.sessions.find(item => item.device.id === focus.deviceId);
     const matching = hub.sessions.filter(item => item.device.id === selected);
     const nextSession = focused ?? (matching.length === 1 ? matching[0] : hub.sessions.length === 1 ? hub.sessions[0] : undefined);
     if (nextSession) selectSession(nextSession);
-    else if (focus && !joinedOnOpen && next.elsewhere?.some(item => item.deviceId === focus.deviceId)) {
-      // The agent is driving a device from another chat or window; show it here too.
-      joinedOnOpen = true;
-      requestSwitch(focus.deviceId, `Joining ${focus.deviceName}…`);
-    }
   }
   selectedDeviceId = session?.device.id ?? (hub.devices.some(item => item.id === selected) ? selected : "");
   if (!selectedDeviceId) {
@@ -667,6 +666,8 @@ function clearSession() {
 function applyConnection(result: ToolResult) {
   const value = resultData(result);
   const connected = sessionSchema.parse(value);
+  busyDevice = undefined;
+  manuallyDisconnected = false;
   if (!value?.observation) throw new Error("Sim Stage returned an incomplete connection observation.");
   selectSession(connected);
   applyCapture({ ...result, _meta: { ...result._meta, [DATA_META_KEY]: value.observation } });
@@ -731,10 +732,8 @@ async function refreshLive() {
 
 /** When the viewer opened, or last chose or followed a device; it follows only later focus changes. */
 let focusHandledAt = new Date().toISOString();
-/** On opening, the viewer may join a device another chat or window is driving, once. */
-let joinedOnOpen = false;
 
-/** Follows the device the agent connected most recently, in this chat or another. */
+/** Follows the device the agent connected most recently, through this server. */
 function followFocus(focus?: DeviceFocus) {
   if (!focus || !session || ended || disconnecting || focus.deviceId === session.device.id || focus.at <= focusHandledAt) return;
   focusHandledAt = focus.at;
@@ -882,6 +881,7 @@ export async function attachScreen() {
 function receiveResult(result: ToolResult) {
   if (ended) return;
   if (result.isError) {
+    if (result._meta?.errorCode === "DEVICE_BUSY" && Array.isArray(result._meta.choices) && result._meta.choices.includes("share-control") && typeof result._meta.deviceId === "string") busyDevice = { deviceId: result._meta.deviceId };
     if (result._meta?.errorCode === "SESSION_EXPIRED" && result._meta.sessionId === session?.id) clearSession();
     showNotice(resultError(result), true);
     return;
@@ -905,13 +905,13 @@ function receiveResult(result: ToolResult) {
 }
 
 /** Connects a device chosen from the device list in one step. */
-export async function connectDevice(id: string) {
+export async function connectDevice(id: string, share = false) {
   if (session || busy) return;
   selectedDeviceId = id;
-  await toggleConnection();
+  await toggleConnection(share);
 }
 
-export async function toggleConnection() {
+export async function toggleConnection(share = false) {
   await run(async () => {
     if (session) {
       const current = session;
@@ -921,13 +921,14 @@ export async function toggleConnection() {
         await callTool("device_disconnect", { sessionId: current.id });
         // Choosing to disconnect also stops following whatever the agent connected before now.
         focusHandledAt = new Date().toISOString();
-        joinedOnOpen = true;
+        manuallyDisconnected = true;
         clearSession();
         hub = { ...hub, sessions: hub.sessions.filter(item => item.id !== current.id) };
         showNotice("Disconnected. The device remains available.");
       } finally { disconnecting = false; }
     } else {
-      const result = await callTool("device_connect", { deviceId: selectedDeviceId });
+      busyDevice = undefined;
+      const result = await callTool("device_connect", { deviceId: selectedDeviceId, ...(share ? { share: true } : {}) });
       if (ended) return;
       focusHandledAt = new Date().toISOString();
       applyConnection(result);
@@ -1061,13 +1062,14 @@ function resetAttachment() {
   pointerStart = undefined;
   coordinateRefreshPending = false;
   contextEnabled = false;
+  busyDevice = undefined;
+  manuallyDisconnected = false;
   observedSettings = {};
   attachedAt = activity = undefined;
   retiredSessionIds.clear();
   resetStream();
   resetLiveInput();
   h264Fallback = false;
-  joinedOnOpen = false;
   pendingSwitch = undefined;
   focusHandledAt = new Date().toISOString();
   snapshot = { hub, selectedDeviceId, initialized, busy, ended, liveEnabled, videoReady: false, liveInput: false, videoMessage: "", videoError: false, notice: "Connecting to Sim Stage…", noticeError: false, settings: {}, contextEnabled, attachmentStatus: "Attach a screen to your next message.", attached: false };

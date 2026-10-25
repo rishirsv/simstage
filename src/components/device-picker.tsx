@@ -31,7 +31,8 @@ function compareSimulators(left: Device, right: Device) {
 
 function DeviceRow({ device, state }: { device: Device; state: ViewerState }) {
   const connecting = state.busy && state.selectedDeviceId === device.id;
-  const status = !device.available ? "Unavailable" : running(device) ? "Running" : device.kind === "simulator" ? "Starts when connected" : "Not connected";
+  const held = state.hub.elsewhere?.find(item => item.deviceId === device.id);
+  const status = held ? `In use${held.owners?.length ? ` by ${held.owners.map(owner => owner.label).join(", ")}` : " in another chat"}` : !device.available ? "Unavailable" : running(device) ? "Running" : device.kind === "simulator" ? "Starts when connected" : "Not connected";
   return <li>
     <button type="button" className="device-row" data-running={running(device)} disabled={!device.available || state.busy || !state.initialized} aria-busy={connecting} onClick={() => void connectDevice(device.id)}>
       <span className="device-row-icon" aria-hidden="true"><DeviceIcon device={device} /></span>
@@ -54,7 +55,8 @@ export function DeviceChooser({ state }: { state: ViewerState }) {
   const shown = showAll ? simulators : simulators.filter(device => device.available).slice(0, active.length ? 4 : 8);
   const loading = !state.initialized || (state.busy && !state.hub.devices.length);
   return <div className="chooser" aria-busy={loading}>
-    {state.noticeError && <Alert variant="destructive"><TriangleAlert /><AlertTitle>Could not connect</AlertTitle><AlertDescription>{state.notice}</AlertDescription></Alert>}
+    {state.busyDevice && <Alert><TriangleAlert /><AlertTitle>Device in use</AlertTitle><AlertDescription><p>Choose another device below, or share control. Both chats can send input.</p><Button disabled={state.busy} onClick={() => void connectDevice(state.busyDevice!.deviceId, true)}>Share control</Button></AlertDescription></Alert>}
+    {state.noticeError && !state.busyDevice && <Alert variant="destructive"><TriangleAlert /><AlertTitle>Could not connect</AlertTitle><AlertDescription>{state.notice}</AlertDescription></Alert>}
     {state.hub.warnings.length > 0 && <Alert><TriangleAlert /><AlertTitle>Some devices could not be listed</AlertTitle><AlertDescription>{state.hub.warnings.map(warning => <p key={warning}>{warning}</p>)}</AlertDescription></Alert>}
     {loading ? <ul className="device-list" aria-label="Loading devices">{[0, 1, 2].map(index => <li key={index} className="device-row-skeleton" />)}</ul> : <>
       {active.length > 0 && <section className="device-group" aria-labelledby="running-heading"><h2 id="running-heading">Running</h2><ul className="device-list">{active.map(device => <DeviceRow key={device.id} device={device} state={state} />)}</ul></section>}

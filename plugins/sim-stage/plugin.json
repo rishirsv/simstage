@@ -77,7 +77,7 @@
               "description": "Setup: connect to the dedicated Sim Stage review simulator with Settings open. Use the live viewer in the supported desktop host. Finish only after the user requests disconnection.",
               "prompt": "Show the connected simulator live in Sim Stage, then disconnect it when I am finished.",
               "tools_triggered": "open_sim_stage, device_disconnect",
-              "expected_behavior": "Open the actual viewer. Its app-only device_stream and device_stream_read calls display live native video using a supported codec; video bytes stay outside model-visible tool content. After the user asks to finish, device_disconnect releases this server session and its stream. Other shared viewers retain their own sessions."
+              "expected_behavior": "Open the actual viewer. Its app-only device_stream and device_stream_read calls display live native video using a supported codec; video bytes stay outside model-visible tool content. After the user asks to finish, device_disconnect releases this server session and its stream. Other shared viewers retain their own sessions. Selections in another chat must not switch this viewer. A busy device requires explicit share: true before control is shared."
             }
           ],
           "negative": [
@@ -103,7 +103,7 @@
       },
       "publication": {
         "countries": [],
-        "release_notes": "Fixes Codex compatibility for coordinate-target input tools while retaining validated two-point coordinates. Includes observed settings text, secure-field controls, scoped session cleanup, the simulator skill, and public listing/support/privacy/terms links."
+        "release_notes": "Keeps viewer selection local to each chat or preview, makes shared device control explicit, adds verified worktree preview launch/reuse with automatic ports, and restricts simulator cleanup to its owner with explicit abandoned-device recovery."
       }
     }
   }

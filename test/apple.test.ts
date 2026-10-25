@@ -849,16 +849,18 @@ const inUse = (key: string) => ({ isError: true, content: [{ type: 'text', text:
 /** Above macOS's process ID limit, so never a live process. */
 const crashedPid = 999_999;
 
-test('a device another Sim Stage server holds is joined, and left running for that server', async (t) => {
+test('busy devices require explicit sharing and remain running for the other server', async (t) => {
   const f = await fixture(t);
   const other = new SessionRegistry(join(f.directory, 'registry'), process.ppid);
   await other.hold({ key: 'Sim Stage 0A0B0C0D', deviceId: 'sim-1', deviceName: 'iPhone' }, 'other-session');
   f.setToolHook(async name => name === 'DeviceInteractionStartSession' ? inUse('Sim Stage 0A0B0C0D') : undefined);
-  const session = await f.hub.connect('sim-1');
+  await assert.rejects(f.hub.connect('sim-1'), /in use by another Sim Stage instance/);
+  assert.equal(f.calls.length, 0, 'busy refusal happens before native input or boot');
+  const session = await f.hub.connect('sim-1', { share: true });
   assert.equal(session.origin, 'sim-stage');
   assert.equal(f.calls.at(-1)?.args.interactSessionKey, 'Sim Stage 0A0B0C0D');
   assert.equal(JSON.stringify(session).includes('0A0B0C0D'), false, 'the key stays on the server');
-  assert.deepEqual((await f.hub.status()).elsewhere, [{ deviceId: 'sim-1', deviceName: 'iPhone', holders: 1 }]);
+  assert.deepEqual((await f.hub.status()).elsewhere, [{ deviceId: 'sim-1', deviceName: 'iPhone', holders: 1, owners: [other.instance] }]);
   await f.hub.disconnect(session.id);
   assert.equal(f.calls.some(call => call.name === 'DeviceInteractionEndSession'), false);
   assert.deepEqual((await other.find('Sim Stage 0A0B0C0D'))?.holders.map(holder => holder.sessionId), ['other-session']);
@@ -878,7 +880,7 @@ test('a session left by a crashed Sim Stage server is adopted and ended by the l
 test("another tool's session is joined only with takeOver and never ended", async (t) => {
   const f = await fixture(t);
   f.setToolHook(async name => name === 'DeviceInteractionStartSession' ? inUse('Verify Login Flow') : undefined);
-  await assert.rejects(f.hub.connect('sim-1'), /in use by another tool's Xcode session, “Verify Login Flow”.*takeOver: true/);
+  await assert.rejects(f.hub.connect('sim-1'), /in use by another tool's Xcode session.*takeOver: true/);
   assert.equal(f.calls.some(call => call.name === 'DeviceInteractionSynthesize'), false, 'nothing touches the device before consent');
   const session = await f.hub.connect('sim-1', { takeOver: true });
   assert.equal(session.origin, 'other-tool');
@@ -898,6 +900,63 @@ test('a session Xcode ended elsewhere expires, and the next connect starts fresh
   const fresh = await f.hub.connect('sim-1');
   assert.notEqual(fresh.id, session.id);
   assert.equal(fresh.origin, 'new');
+});
+
+test('servers sharing native bookkeeping keep independent viewer selections', async (t) => {
+  const f = await fixture(t);
+  f.setToolHook(async (name, args) => name === 'DeviceInteractionStartSession' ? { structuredContent: { interactionSessionKey: `key-${args.deviceIdentifier}` } } : undefined);
+  const other = new AppleHub({ boundary: f.boundary, registry: new SessionRegistry(join(f.directory, 'registry')) });
+  t.after(() => other.close());
+  const first = await f.hub.connect('sim-1');
+  assert.equal((await other.status()).focus, undefined, 'a new viewer has no global selection to join');
+  await other.connect('physical-1');
+  assert.equal((await f.hub.status()).focus?.deviceId, 'sim-1');
+  assert.equal((await f.hub.frame(first.id)).focus, undefined, 'another server cannot redirect still frames');
+  assert.equal((await other.status()).focus?.deviceId, 'physical-1');
+});
+
+test('simultaneous default connections have only one controller; losing server sends no native start', async t => {
+  const f = await fixture(t);
+  const other = new AppleHub({ boundary: f.boundary, registry: new SessionRegistry(join(f.directory, 'registry')) });
+  t.after(() => other.close());
+  const outcomes = await Promise.allSettled([f.hub.connect('sim-1'), other.connect('sim-1')]);
+  assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
+  const refused = outcomes.find(result => result.status === 'rejected') as PromiseRejectedResult;
+  assert.equal(refused.reason.code, 'DEVICE_BUSY');
+  assert.equal(f.calls.filter(call => call.name === 'DeviceInteractionStartSession').length, 1);
+});
+
+test('simulator deletion drains queued input before native release and refuses shutdown failures', async t => {
+  const f = await fixture(t);
+  await f.registry.markCreated('sim-1');
+  const session = await f.hub.connect('sim-1');
+  let entered!: () => void, finish!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  f.setToolHook(async (name, args) => {
+    if (name === 'DeviceInteractionSynthesize' && args.interactionCommand) { entered(); await gate; }
+    return undefined;
+  });
+  const action = f.hub.action(session.id, { type: 'button', button: 'home' }, { settle: false });
+  await started;
+  const deleting = f.hub.deleteSimulator('sim-1');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.calls.some(call => call.name === 'DeviceInteractionEndSession'), false);
+  assert.equal(f.commands.some(args => args[1] === 'delete'), false);
+  finish();
+  await Promise.all([action, deleting]);
+  assert.ok(f.commands.some(args => args.join(' ') === 'simctl delete sim-1'));
+
+  const failed = await fixture(t);
+  await failed.registry.markCreated('sim-1');
+  failed.setCommandHook(async args => {
+    if (args[1] === 'list') return JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-2': [{ ...simulator, state: 'Booted' }] } });
+    if (args[1] === 'shutdown') throw new Error('shutdown failed');
+    return undefined;
+  });
+  await assert.rejects(failed.hub.deleteSimulator('sim-1'), /shutdown failed/);
+  assert.equal(failed.commands.some(args => args[1] === 'delete'), false);
+  assert.equal((await failed.registry.creationOwnership())['sim-1']?.owned, true, 'a failed shutdown preserves ownership and never erases');
 });
 
 test('connecting another device points viewers of the first at it', async (t) => {
@@ -951,6 +1010,9 @@ test('simulators are created and cloned for testing, and only those Sim Stage ma
   // A viewer in another window followed the agent onto the new simulator.
   const viewer = new SessionRegistry(join(f.directory, 'registry'), process.ppid);
   await viewer.hold({ key: 'secret-key', deviceId: created, deviceName: 'iPhone 17 Pro (Sim Stage)' }, 'viewer-session');
+  await assert.rejects(f.hub.deleteSimulator(created), /Another instance or tool still holds/);
+  assert.equal(f.commands.some(args => args[1] === 'delete'), false);
+  await viewer.release('secret-key', 'viewer-session');
   await f.hub.deleteSimulator(created);
   assert.ok(f.commands.some(args => args.join(' ') === `simctl delete ${created}`));
   assert.deepEqual(f.calls.filter(call => call.name === 'DeviceInteractionEndSession').map(call => call.args.interactionSessionKey), ['secret-key'], 'its shared session ends once, before deletion');
@@ -1003,8 +1065,10 @@ test('missing or corrupt holder bookkeeping cannot authorize ending a known fore
     const file = join(f.directory, 'registry', 'sessions.json');
     if (corrupt) await writeFile(file, 'unreadable JSON');
     else await rm(file);
-    await f.hub.disconnect(session.id);
+    if (corrupt) await assert.rejects(f.hub.disconnect(session.id), /JSON/);
+    else await f.hub.disconnect(session.id);
     assert.equal(f.calls.some(call => call.name === 'DeviceInteractionEndSession'), false);
+    if (corrupt) await rm(file);
   }
 });
 
@@ -1082,7 +1146,7 @@ test('failed holder persistence cleans up only the session created inside its ex
       await mkdir(failure);
       return key ? inUse(key) : undefined;
     });
-    await assert.rejects(f.hub.connect('sim-1', { takeOver: true }), /EISDIR|ENOTDIR|directory/i);
+    await assert.rejects(f.hub.connect('sim-1', { takeOver: true, share: true }), /EISDIR|ENOTDIR|directory/i);
     assert.equal(f.calls.some(call => call.name === 'DeviceInteractionSynthesize'), false);
     assert.deepEqual(f.calls.filter(call => call.name === 'DeviceInteractionEndSession').map(call => call.args.interactionSessionKey), key ? [] : ['secret-key']);
     assert.deepEqual((await f.hub.status()).sessions, []);

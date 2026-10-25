@@ -14,13 +14,13 @@ The local server uses Apple's Xcode bridge and simulator services. Tool observat
 
 ## Storage and retention
 
-The per-user file `~/Library/Caches/sim-stage/sessions.json` stores native interaction-session keys, device identifiers/names, process holders, shared focus and the IDs of simulators created by Sim Stage. New cache directories use mode 0700 and files 0600. Servers sharing the same OS user can use this registry across chats. Dead process holders and previous-boot sessions are pruned; created simulator IDs remain until removed, with no general time-based expiry.
+The per-user file `~/Library/Caches/sim-stage/sessions.json` stores native interaction-session keys, device identifiers/names, process holders, server instance identities, optional workspace paths/labels, preview loopback URLs and creation ownership for simulators created by Sim Stage. Viewer focus stays in server memory. New cache directories use mode 0700 and files 0600. Servers sharing the same OS user can use this registry across chats. Dead process holders are removed from active ownership; recognizable abandoned session records can support recovery. Previous-boot sessions and preview records are discarded. Created simulator IDs and their ownership remain until removed, with no general time-based expiry.
 
 Observations and bounded video buffers live in memory. Device sessions default to five minutes of inactivity expiry; an idle video relay expires after ten seconds without reads. Temporary capture directories are removed in normal `finally` cleanup. An abnormal process termination can leave temporary files. These timings do not govern host/chat retention, simulator app data or recordings you explicitly save.
 
 ## Controls and deletion
 
-Disconnect your session when finished. Other chats sharing the device retain their own sessions. Restore device settings changed for a temporary test; disconnect does not undo app input or settings. `simulator_delete` removes a simulator created by Sim Stage, including its apps and data, and ends its shared sessions.
+Disconnect your session when finished. Other chats sharing the device retain their own sessions. Restore device settings changed for a temporary test; disconnect does not undo app input or settings. `simulator_delete` removes a simulator created by Sim Stage, including its apps and data, after checking this instance owns it and no other instance holds it. Abandoned creation records require an explicit `simulator_claim` before cleanup.
 
 To remove the local registry, stop the Sim Stage MCP processes first, then delete `~/Library/Caches/sim-stage/`. Deleting the registry does not delete simulators or their apps/data and removes Sim Stage's record of which simulators it created. Remove unwanted disposable simulators before clearing that record. Delete explicitly saved captures and recordings separately. Use the host's controls to manage conversation data.
 

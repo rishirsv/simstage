@@ -27,7 +27,7 @@ export function DeviceBar({ state, controls }: { state: ViewerState; controls?: 
   const disabled = !state.initialized || state.busy || state.ended;
   if (!device) {
     return <header className="device-bar">
-      <h1 className="device-bar-title">Choose a device</h1>
+      <h1 className="device-bar-title">{state.hub.instance?.label ?? "Choose a device"}</h1>
       <Tooltip><TooltipTrigger asChild><Button id="scan" variant="ghost" size="icon-sm" className="device-bar-end" disabled={disabled} onClick={() => void scanDevices()} aria-label="Refresh device list"><RefreshCw /></Button></TooltipTrigger><TooltipContent>Refresh device list</TooltipContent></Tooltip>
     </header>;
   }
@@ -37,6 +37,7 @@ export function DeviceBar({ state, controls }: { state: ViewerState; controls?: 
     <div className="device-identity">
       <h1 className="device-name" title={device.name}>{device.name}</h1>
       <p className="device-meta">
+        {state.hub.instance?.workspacePath && <><span title={state.hub.instance.workspacePath}>{state.hub.instance.label}</span><span aria-hidden="true">·</span></>}
         <span className="device-runtime">{device.runtime || device.platform}{device.kind === "simulator" ? " Simulator" : ""}</span>
         <span aria-hidden="true">·</span>
         <span id="video-status" className="device-status" role="status"><LiveStatus state={state} /></span>

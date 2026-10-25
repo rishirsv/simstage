@@ -24,6 +24,60 @@ class ViewerNode extends EventTarget {
   releasePointerCapture(id: number) { this.captured.delete(id); }
 }
 
+test("viewer opening never joins another server; sharing is explicit and manual disconnect stays disconnected", async () => {
+  const document = Object.assign(new EventTarget(), { hidden: false, documentElement: new ViewerNode() });
+  const window = Object.assign(new EventTarget(), { __SIM_STAGE_PREVIEW__: true, location: { search: "" } });
+  const [root, screen, canvas, frame, gesture] = Array.from({ length: 5 }, () => new ViewerNode());
+  const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+  let ownSession = false;
+  const replacements = {
+    window, document,
+    matchMedia: () => ({ matches: false }),
+    IntersectionObserver: class { observe() {} disconnect() {} },
+    setTimeout: () => 0, clearTimeout() {},
+    fetch: async (_url: string, init: RequestInit) => {
+      const input = JSON.parse(init.body as string) as { name: string; arguments: Record<string, unknown> };
+      calls.push(input);
+      let result: unknown;
+      if (input.name === "sim_stage_status") result = { content: [], structuredContent: { devices: [current.device], sessions: ownSession ? [current] : [], warnings: [], elsewhere: [{ deviceId: current.device.id, deviceName: current.device.name, holders: 1 }], focus: { deviceId: current.device.id, deviceName: current.device.name, at: "2000-01-01T00:00:00.000Z" } } };
+      else if (input.name === "device_connect") {
+        if (!input.arguments.share) result = { isError: true, content: [{ type: "text", text: "Device in use" }], _meta: { errorCode: "DEVICE_BUSY", deviceId: current.device.id, choices: ["share-control"] } };
+        else { ownSession = true; result = { ...captured("shared"), structuredContent: { ...current, origin: "sim-stage", observation: captured("").structuredContent } }; }
+      } else if (input.name === "device_disconnect") result = { content: [], structuredContent: { disconnected: true } };
+      else if (input.name === "device_capture") result = captured("capture");
+      else result = { content: [] };
+      return { ok: true, async json() { return result; } };
+    },
+  };
+  const previous = Object.keys(replacements).map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  for (const [name, value] of Object.entries(replacements)) Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  let dispose: (() => void) | undefined;
+  try {
+    const viewer = await import(new URL(`../src/viewer-controller.ts?ownership=${Date.now()}`, import.meta.url).href);
+    const attached = viewer.initializeViewer({ root, screen, canvas, frame, gesture });
+    dispose = attached.dispose;
+    await attached.ready;
+    assert.equal(viewer.getSnapshot().session, undefined);
+    assert.equal(calls.some(call => call.name === "device_connect"), false);
+    await viewer.connectDevice(current.device.id);
+    assert.equal(viewer.getSnapshot().busyDevice?.deviceId, current.device.id);
+    assert.equal(viewer.getSnapshot().session, undefined);
+    await viewer.connectDevice(current.device.id, true);
+    assert.equal(viewer.getSnapshot().session?.id, current.id);
+    assert.equal(viewer.getSnapshot().busyDevice, undefined);
+    await viewer.toggleConnection();
+    await viewer.scanDevices();
+    assert.equal(viewer.getSnapshot().session, undefined, "a remaining local session and stale focus cannot undo Disconnect");
+    assert.deepEqual(calls.filter(call => call.name === "device_connect").map(call => call.arguments), [{ deviceId: current.device.id }, { deviceId: current.device.id, share: true }]);
+  } finally {
+    dispose?.();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete (globalThis as unknown as Record<string, unknown>)[name];
+    }
+  }
+});
+
 class ViewerDecoder {
   state: CodecState = "unconfigured";
   decodeQueueSize = 0;
